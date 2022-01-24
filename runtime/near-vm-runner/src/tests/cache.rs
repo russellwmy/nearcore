@@ -95,19 +95,30 @@ fn test_wasmer2_artifact_output_stability() {
     //
     // Note that this test is a best-effort fish net. Some changes that should modify the hash will
     // fall through the cracks here, but hopefully it should catch most of the fish just fine.
-    let mut hasher = StableHasher::new();
-    let code = near_test_contracts::trivial_contract();
-    let config = VMConfig::test();
-    let prepared_code = prepare::prepare_contract(code, &config).unwrap();
-    let mut features = CpuFeature::set();
-    features.insert(CpuFeature::AVX);
-    let triple = "x86_64-unknown-linux-gnu".parse().unwrap();
-    let target = Target::new(triple, features);
-    let vm = Wasmer2VM::new_for_target(config, target);
-    let artifact = vm.compile_uncached(&prepared_code).unwrap();
-    let serialized = artifact.artifact().serialize().unwrap();
-    serialized.hash(&mut hasher);
-    assert_eq!(hasher.finish(), 18352148442716835594, "WASMER2_CONFIG needs version change");
+    let expected_hashes =
+        [18352148442716835594, 9541580911438661949, 1877160384252030064, 1939770487874739745];
+    let contracts = [
+        near_test_contracts::trivial_contract(),
+        near_test_contracts::rs_contract(),
+        near_test_contracts::ts_contract(),
+        near_test_contracts::fuzzing_contract(),
+    ];
+    let mut got_hashes = Vec::with_capacity(expected_hashes.len());
+    for contract in contracts {
+        let mut hasher = StableHasher::new();
+        let config = VMConfig::test();
+        let prepared_code = prepare::prepare_contract(contract, &config).unwrap();
+        let mut features = CpuFeature::set();
+        features.insert(CpuFeature::AVX);
+        let triple = "x86_64-unknown-linux-gnu".parse().unwrap();
+        let target = Target::new(triple, features);
+        let vm = Wasmer2VM::new_for_target(config, target);
+        let artifact = vm.compile_uncached(&prepared_code).unwrap();
+        let serialized = artifact.artifact().serialize().unwrap();
+        serialized.hash(&mut hasher);
+        got_hashes.push(hasher.finish());
+    }
+    assert_eq!(got_hashes, expected_hashes, "WASMER2_CONFIG needs version change");
 }
 
 /// [`CompiledContractCache`] which simulates failures in the underlying
