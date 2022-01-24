@@ -252,7 +252,7 @@ impl NightshadeRuntime {
 
     pub fn test_with_num_epochs(
         home_dir: &Path,
-        store: Arc<Store>,
+        store: Store,
         genesis: &Genesis,
         num_epochs_to_keep_store_data: Option<u64>,
     ) -> Self {

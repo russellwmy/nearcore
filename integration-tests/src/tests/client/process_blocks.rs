@@ -3896,6 +3896,7 @@ mod access_key_nonce_range_tests {
                     &genesis,
                     TrackedConfig::AllShards,
                     RuntimeConfigStore::test(),
+                    None,
                 )) as Arc<dyn RuntimeAdapter>
             })
             .collect();
