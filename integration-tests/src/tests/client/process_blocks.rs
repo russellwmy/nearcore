@@ -98,7 +98,7 @@ pub fn create_nightshade_runtimes(genesis: &Genesis, n: usize) -> Vec<Arc<dyn Ru
 pub fn create_nightshade_runtimes_with_num_epochs(
     genesis: &Genesis,
     n: usize,
-    num_epochs_to_keep_store_data: Option<u64>,
+    additional_epochs_to_keep: Option<u64>,
 ) -> Vec<Arc<dyn RuntimeAdapter>> {
     (0..n)
         .map(|_| {
@@ -106,7 +106,7 @@ pub fn create_nightshade_runtimes_with_num_epochs(
                 Path::new("."),
                 create_test_store(),
                 genesis,
-                num_epochs_to_keep_store_data,
+                additional_epochs_to_keep,
             )) as Arc<dyn RuntimeAdapter>
         })
         .collect()
@@ -1575,16 +1575,16 @@ fn test_gc_after_state_sync() {
     assert!(env.clients[1].chain.clear_data(tries, 2).is_ok());
 }
 
-/// This tests the `num_epochs_to_keep_store_data` setting, which specifies the number of epochs
+/// This tests the `additional_epochs_to_keep` setting, which specifies the number of epochs
 /// to keep.
 ///
-/// For this test, we set epoch length to `128`, and `num_epochs_to_keep_store_data` to 10.
+/// For this test, we set epoch length to `128`, and `additional_epochs_to_keep` to 10.
 /// This tests shows, we keep 9 full epochs, and one partial epoch with `epoch_length`-`100` blocks.
 /// I know it's weird, right?
 #[test]
 fn test_num_blocks_in_storage_config_setting() {
     let epoch_length = 128;
-    let num_epochs_to_keep_store_data = 10;
+    let additional_epochs_to_keep = 10;
 
     let mut genesis = Genesis::test(vec!["test0".parse().unwrap(), "test1".parse().unwrap()], 1);
     genesis.config.epoch_length = epoch_length;
@@ -1595,10 +1595,10 @@ fn test_num_blocks_in_storage_config_setting() {
         .runtime_adapters(create_nightshade_runtimes_with_num_epochs(
             &genesis,
             2,
-            Some(num_epochs_to_keep_store_data),
+            Some(additional_epochs_to_keep),
         ))
         .build();
-    for i in 1..epoch_length * (num_epochs_to_keep_store_data + 1) + 2 {
+    for i in 1..epoch_length * (additional_epochs_to_keep + 1) + 2 {
         let block = env.clients[0].produce_block(i).unwrap().unwrap();
         env.process_block(0, block.clone(), Provenance::PRODUCED);
         env.process_block(1, block, Provenance::NONE);
@@ -1608,7 +1608,7 @@ fn test_num_blocks_in_storage_config_setting() {
         assert!(env.clients[0].chain.get_block_by_height(i).is_err());
     }
     // Check whenever we still keep blocks.
-    for i in epoch_length + 101..epoch_length * (num_epochs_to_keep_store_data) + 2 {
+    for i in epoch_length + 101..epoch_length * (additional_epochs_to_keep) + 2 {
         env.clients[0].chain.get_block_by_height(i).unwrap();
     }
 }

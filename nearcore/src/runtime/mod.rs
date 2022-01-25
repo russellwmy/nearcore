@@ -141,7 +141,7 @@ pub struct NightshadeRuntime {
     shard_tracker: ShardTracker,
     genesis_state_roots: Vec<StateRoot>,
     migration_data: Arc<MigrationData>,
-    num_epochs_to_keep_store_data: u64,
+    additional_epochs_to_keep: u64,
 }
 
 impl NightshadeRuntime {
@@ -160,7 +160,7 @@ impl NightshadeRuntime {
             trie_viewer_state_size_limit,
             max_gas_burnt_view,
             None,
-            Some(config.config.num_epochs_to_keep_store_data),
+            Some(config.config.additional_epochs_to_keep),
         )
     }
 
@@ -172,7 +172,7 @@ impl NightshadeRuntime {
         trie_viewer_state_size_limit: Option<u64>,
         max_gas_burnt_view: Option<Gas>,
         runtime_config_store: Option<RuntimeConfigStore>,
-        num_epochs_to_keep_store_data: Option<u64>,
+        additional_epochs_to_keep: Option<u64>,
     ) -> Self {
         let runtime_config_store = match runtime_config_store {
             Some(store) => store,
@@ -213,9 +213,7 @@ impl NightshadeRuntime {
             shard_tracker,
             genesis_state_roots: state_roots,
             migration_data: Arc::new(load_migration_data(&genesis.config.chain_id)),
-            num_epochs_to_keep_store_data: num_epochs_to_keep_store_data
-                .unwrap_or_default()
-                .max(MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA),
+            additional_epochs_to_keep: additional_epochs_to_keep.unwrap_or_default(),
         }
     }
 
@@ -225,7 +223,7 @@ impl NightshadeRuntime {
         genesis: &Genesis,
         tracked_config: TrackedConfig,
         runtime_config_store: RuntimeConfigStore,
-        num_epochs_to_keep_store_data: Option<u64>,
+        additional_epochs_to_keep: Option<u64>,
     ) -> Self {
         Self::new(
             home_dir,
@@ -235,7 +233,7 @@ impl NightshadeRuntime {
             None,
             None,
             Some(runtime_config_store),
-            num_epochs_to_keep_store_data,
+            additional_epochs_to_keep,
         )
     }
 
@@ -254,7 +252,7 @@ impl NightshadeRuntime {
         home_dir: &Path,
         store: Store,
         genesis: &Genesis,
-        num_epochs_to_keep_store_data: Option<u64>,
+        additional_epochs_to_keep: Option<u64>,
     ) -> Self {
         Self::test_with_runtime_config_store(
             home_dir,
@@ -262,7 +260,7 @@ impl NightshadeRuntime {
             genesis,
             TrackedConfig::new_empty(),
             RuntimeConfigStore::test(),
-            num_epochs_to_keep_store_data,
+            additional_epochs_to_keep,
         )
     }
 
@@ -1234,7 +1232,7 @@ impl RuntimeAdapter for NightshadeRuntime {
             let mut last_block_in_prev_epoch = *epoch_first_block_info.prev_hash();
             let mut epoch_start_height = *epoch_first_block_info.height();
 
-            for _ in 0..self.num_epochs_to_keep_store_data - 1 {
+            for _ in 0..(MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA - 1) + self.additional_epochs_to_keep {
                 let epoch_first_block =
                     *epoch_manager.get_block_info(&last_block_in_prev_epoch)?.epoch_first_block();
                 let epoch_first_block_info = epoch_manager.get_block_info(&epoch_first_block)?;

@@ -307,8 +307,8 @@ fn default_gc_blocks_limit() -> NumBlocks {
     2
 }
 
-fn default_num_epochs_to_keep_store_data() -> u64 {
-    MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA
+fn default_additional_epochs_to_keep() -> u64 {
+    0
 }
 
 fn default_view_client_threads() -> usize {
@@ -440,8 +440,8 @@ pub struct Config {
     /// If set, overrides value in genesis configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_gas_burnt_view: Option<Gas>,
-    #[serde(default = "default_num_epochs_to_keep_store_data")]
-    pub num_epochs_to_keep_store_data: u64,
+    #[serde(default = "default_additional_epochs_to_keep")]
+    pub additional_epochs_to_keep: u64,
 }
 
 impl Default for Config {
@@ -468,7 +468,7 @@ impl Default for Config {
             view_client_throttle_period: default_view_client_throttle_period(),
             trie_viewer_state_size_limit: default_trie_viewer_state_size_limit(),
             max_gas_burnt_view: None,
-            num_epochs_to_keep_store_data: default_num_epochs_to_keep_store_data(),
+            additional_epochs_to_keep: default_additional_epochs_to_keep(),
         }
     }
 }
@@ -508,10 +508,10 @@ impl Config {
     }
 
     pub fn verify(&self) -> anyhow::Result<()> {
-        if self.num_epochs_to_keep_store_data < MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA {
+        if self.additional_epochs_to_keep < MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA {
             bail!(
-                "num_epochs_to_keep_store_data: {} is below: {}",
-                self.num_epochs_to_keep_store_data,
+                "additional_epochs_to_keep: {} is below: {}",
+                self.additional_epochs_to_keep,
                 MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA
             );
         }

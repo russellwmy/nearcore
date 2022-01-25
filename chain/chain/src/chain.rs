@@ -95,7 +95,7 @@ pub const TX_ROUTING_HEIGHT_HORIZON: BlockHeightDelta = 4;
 const NEAR_BASE: Balance = 1_000_000_000_000_000_000_000_000;
 
 /// Default number of epochs for which we keep store data.
-/// This value may be overridden by `Config.num_epochs_to_keep_store_data`.
+/// This value may be overridden by `Config.additional_epochs_to_keep`.
 pub const MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA: u64 = 5;
 
 /// Maximum number of height to go through at each step when cleaning forks during garbage collection.

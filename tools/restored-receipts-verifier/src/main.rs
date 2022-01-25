@@ -54,7 +54,7 @@ fn main() -> Result<()> {
         None,
         near_config.client_config.max_gas_burnt_view,
         None,
-        Some(near_config.config.num_epochs_to_keep_store_data),
+        Some(near_config.config.additional_epochs_to_keep),
     );
 
     let mut receipts_missing = Vec::<Receipt>::new();
