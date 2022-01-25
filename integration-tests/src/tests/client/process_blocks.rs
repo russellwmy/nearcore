@@ -1584,7 +1584,7 @@ fn test_gc_after_state_sync() {
 #[test]
 fn test_num_blocks_in_storage_config_setting() {
     let epoch_length = 128;
-    let additional_epochs_to_keep = 10;
+    let epochs_to_keep = 10;
 
     let mut genesis = Genesis::test(vec!["test0".parse().unwrap(), "test1".parse().unwrap()], 1);
     genesis.config.epoch_length = epoch_length;
@@ -1595,10 +1595,10 @@ fn test_num_blocks_in_storage_config_setting() {
         .runtime_adapters(create_nightshade_runtimes_with_num_epochs(
             &genesis,
             2,
-            additional_epochs_to_keep,
+            epochs_to_keep - 5,
         ))
         .build();
-    for i in 1..epoch_length * (additional_epochs_to_keep + 1) + 2 {
+    for i in 1..epoch_length * (epochs_to_keep + 1) + 2 {
         let block = env.clients[0].produce_block(i).unwrap().unwrap();
         env.process_block(0, block.clone(), Provenance::PRODUCED);
         env.process_block(1, block, Provenance::NONE);
@@ -1608,7 +1608,7 @@ fn test_num_blocks_in_storage_config_setting() {
         assert!(env.clients[0].chain.get_block_by_height(i).is_err());
     }
     // Check whenever we still keep blocks.
-    for i in epoch_length + 101..epoch_length * (additional_epochs_to_keep) + 2 {
+    for i in epoch_length + 101..epoch_length * (epochs_to_keep) + 2 {
         env.clients[0].chain.get_block_by_height(i).unwrap();
     }
 }
