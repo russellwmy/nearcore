@@ -1575,12 +1575,10 @@ fn test_gc_after_state_sync() {
     assert!(env.clients[1].chain.clear_data(tries, 2).is_ok());
 }
 
-/// This tests the `additional_epochs_to_keep` setting, which specifies the number of epochs
-/// to keep.
+/// This tests the `additional_epochs_to_keep` setting, which specifies the number of epochs to keep.
 ///
-/// For this test, we set epoch length to `128`, and `additional_epochs_to_keep` to 10.
-/// This tests shows, we keep 9 full epochs, and one partial epoch with `epoch_length`-`100` blocks.
-/// I know it's weird, right?
+/// For this test, we set epoch length to `128`, and `additional_epochs_to_keep` to `5`.
+/// This tests shows, we keep `9` full epochs, and one partial epoch with `epoch_length - 100` blocks.
 #[test]
 fn test_num_blocks_in_storage_config_setting() {
     let epoch_length = 128;
