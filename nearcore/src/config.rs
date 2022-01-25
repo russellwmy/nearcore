@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context};
 use hyper::body::HttpBody;
 use indicatif::{ProgressBar, ProgressStyle};
-use near_chain::chain::MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA;
+use near_chain::chain::NUM_EPOCHS_TO_KEEP_STORE_DATA;
 use near_primitives::time::Clock;
 use num_rational::Rational;
 use serde::{Deserialize, Serialize};
@@ -508,11 +508,11 @@ impl Config {
     }
 
     pub fn verify(&self) -> anyhow::Result<()> {
-        if self.additional_epochs_to_keep < MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA {
+        if self.additional_epochs_to_keep < NUM_EPOCHS_TO_KEEP_STORE_DATA {
             bail!(
                 "additional_epochs_to_keep: {} is below: {}",
                 self.additional_epochs_to_keep,
-                MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA
+                NUM_EPOCHS_TO_KEEP_STORE_DATA
             );
         }
         Ok(())

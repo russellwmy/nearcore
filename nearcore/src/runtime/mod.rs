@@ -8,7 +8,7 @@ use borsh::ser::BorshSerialize;
 use borsh::BorshDeserialize;
 use tracing::{debug, error, info, warn};
 
-use near_chain::chain::MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA;
+use near_chain::chain::NUM_EPOCHS_TO_KEEP_STORE_DATA;
 use near_chain::types::{
     ApplySplitStateResult, ApplyTransactionResult, BlockHeaderInfo, ValidatorInfoIdentifier,
 };
@@ -1232,7 +1232,7 @@ impl RuntimeAdapter for NightshadeRuntime {
             let mut last_block_in_prev_epoch = *epoch_first_block_info.prev_hash();
             let mut epoch_start_height = *epoch_first_block_info.height();
 
-            for _ in 0..(MIN_NUM_EPOCHS_TO_KEEP_STORE_DATA - 1) + self.additional_epochs_to_keep {
+            for _ in 0..(NUM_EPOCHS_TO_KEEP_STORE_DATA - 1) + self.additional_epochs_to_keep {
                 let epoch_first_block =
                     *epoch_manager.get_block_info(&last_block_in_prev_epoch)?.epoch_first_block();
                 let epoch_first_block_info = epoch_manager.get_block_info(&epoch_first_block)?;
