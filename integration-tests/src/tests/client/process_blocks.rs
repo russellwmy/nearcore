@@ -98,7 +98,7 @@ pub fn create_nightshade_runtimes(genesis: &Genesis, n: usize) -> Vec<Arc<dyn Ru
 pub fn create_nightshade_runtimes_with_num_epochs(
     genesis: &Genesis,
     n: usize,
-    additional_epochs_to_keep: Option<u64>,
+    additional_epochs_to_keep: u64,
 ) -> Vec<Arc<dyn RuntimeAdapter>> {
     (0..n)
         .map(|_| {
@@ -1595,7 +1595,7 @@ fn test_num_blocks_in_storage_config_setting() {
         .runtime_adapters(create_nightshade_runtimes_with_num_epochs(
             &genesis,
             2,
-            Some(additional_epochs_to_keep),
+            additional_epochs_to_keep,
         ))
         .build();
     for i in 1..epoch_length * (additional_epochs_to_keep + 1) + 2 {
@@ -3400,7 +3400,7 @@ fn test_limit_contract_functions_number_upgrade() {
                 &genesis,
                 TrackedConfig::new_empty(),
                 RuntimeConfigStore::new(None),
-                None,
+                0,
             ))];
         let mut env = TestEnv::builder(chain_genesis).runtime_adapters(runtimes).build();
 
@@ -3770,7 +3770,7 @@ mod access_key_nonce_range_tests {
                     &genesis,
                     TrackedConfig::AllShards,
                     RuntimeConfigStore::test(),
-                    None,
+                    0,
                 )) as Arc<dyn RuntimeAdapter>
             })
             .collect();
@@ -3896,7 +3896,7 @@ mod access_key_nonce_range_tests {
                     &genesis,
                     TrackedConfig::AllShards,
                     RuntimeConfigStore::test(),
-                    None,
+                    0,
                 )) as Arc<dyn RuntimeAdapter>
             })
             .collect();

@@ -71,12 +71,15 @@ pub struct EpochManager {
     epoch_info_aggregator: Option<EpochInfoAggregator>,
     /// Largest final height. Monotonically increasing.
     largest_final_height: BlockHeight,
+    /// Number of additional epochs to keep in memory.
+    pub additional_epochs_to_keep: u64,
 }
 
 impl EpochManager {
     pub fn new_from_genesis_config(
         store: Store,
         genesis_config: &GenesisConfig,
+        additional_epochs_to_keep: u64,
     ) -> Result<Self, EpochError> {
         let reward_calculator = RewardCalculator::new(genesis_config);
         let all_epoch_config = AllEpochConfig::from(genesis_config);
@@ -86,6 +89,7 @@ impl EpochManager {
             genesis_config.protocol_version,
             reward_calculator,
             genesis_config.validators(),
+            additional_epochs_to_keep,
         )
     }
 
@@ -95,6 +99,7 @@ impl EpochManager {
         genesis_protocol_version: ProtocolVersion,
         reward_calculator: RewardCalculator,
         validators: Vec<ValidatorStake>,
+        additional_epochs_to_keep: u64,
     ) -> Result<Self, EpochError> {
         let validator_reward = vec![(reward_calculator.protocol_treasury_account.clone(), 0u128)]
             .into_iter()
@@ -111,6 +116,7 @@ impl EpochManager {
             epoch_validators_ordered_unique: SizedCache::with_size(EPOCH_CACHE_SIZE),
             epoch_info_aggregator: None,
             largest_final_height: 0,
+            additional_epochs_to_keep,
         };
         let genesis_epoch_id = EpochId::default();
         if !epoch_manager.has_epoch_info(&genesis_epoch_id)? {
@@ -1627,6 +1633,7 @@ mod tests2 {
                 .iter()
                 .map(|(account_id, balance)| stake(account_id.clone(), *balance))
                 .collect(),
+            0,
         )
         .unwrap();
         assert!(compare_epoch_infos(epoch_manager2.get_epoch_info(&epoch3).unwrap(), &expected3));
@@ -1895,6 +1902,7 @@ mod tests2 {
             PROTOCOL_VERSION,
             default_reward_calculator(),
             validators,
+            0,
         )
         .unwrap();
         let h = hash_range(8);
@@ -1965,6 +1973,7 @@ mod tests2 {
             PROTOCOL_VERSION,
             default_reward_calculator(),
             validators,
+            0,
         )
         .unwrap();
 
@@ -2037,6 +2046,7 @@ mod tests2 {
             PROTOCOL_VERSION,
             default_reward_calculator(),
             validators,
+            0,
         )
         .unwrap();
 
@@ -3707,7 +3717,8 @@ mod tests2 {
             stake("test2".parse().unwrap(), amount_staked),
         ];
         let mut epoch_manager =
-            EpochManager::new(store, config, 0, default_reward_calculator(), validators).unwrap();
+            EpochManager::new(store, config, 0, default_reward_calculator(), validators, 0)
+                .unwrap();
         let h = hash_range(8);
         record_block(&mut epoch_manager, CryptoHash::default(), h[0], 0, vec![]);
         let mut block_info1 =
@@ -3751,6 +3762,7 @@ mod tests2 {
             new_protocol_version - 1,
             default_reward_calculator(),
             validators,
+            0,
         )
         .unwrap();
         let h = hash_range(8);
@@ -3838,7 +3850,8 @@ mod tests2 {
             stake("test2".parse().unwrap(), amount_staked / 5),
         ];
         let mut epoch_manager =
-            EpochManager::new(store, config, 0, default_reward_calculator(), validators).unwrap();
+            EpochManager::new(store, config, 0, default_reward_calculator(), validators, 0)
+                .unwrap();
         let h = hash_range(50);
         record_block(&mut epoch_manager, CryptoHash::default(), h[0], 0, vec![]);
         let mut block_info1 =
@@ -3874,6 +3887,7 @@ mod tests2 {
             UPGRADABILITY_FIX_PROTOCOL_VERSION,
             default_reward_calculator(),
             validators,
+            0,
         )
         .unwrap();
         let h = hash_range(5 * epoch_length);
