@@ -8,7 +8,6 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context};
 use hyper::body::HttpBody;
 use indicatif::{ProgressBar, ProgressStyle};
-use near_chain::chain::NUM_EPOCHS_TO_KEEP_STORE_DATA;
 use near_primitives::time::Clock;
 use num_rational::Rational;
 use serde::{Deserialize, Serialize};
@@ -477,11 +476,8 @@ impl Config {
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let s = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config from {}", path.display()))?;
-        let config: Config = serde_json::from_str(&s)
+        let config = serde_json::from_str(&s)
             .with_context(|| format!("Failed to deserialize config from {}", path.display()))?;
-        config
-            .verify()
-            .with_context(|| format!("Failed to verify config from {}", path.display()))?;
         Ok(config)
     }
 
@@ -505,17 +501,6 @@ impl Config {
         {
             self.rpc.get_or_insert(Default::default()).addr = addr;
         }
-    }
-
-    pub fn verify(&self) -> anyhow::Result<()> {
-        if self.additional_epochs_to_keep < NUM_EPOCHS_TO_KEEP_STORE_DATA {
-            bail!(
-                "additional_epochs_to_keep: {} is below: {}",
-                self.additional_epochs_to_keep,
-                NUM_EPOCHS_TO_KEEP_STORE_DATA
-            );
-        }
-        Ok(())
     }
 }
 
