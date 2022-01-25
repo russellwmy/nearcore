@@ -111,10 +111,6 @@ impl PeerStore {
                         // If it says in database, that peer should be banned, ban the peer.
                         current_peer_state.get_mut().status = peer_state.status;
                     }
-                    // Maybe a bug:
-                    // For boot node, it's first_seen = now
-                    // TODO: consider adding
-                    // current_peer_state.get_mut().first_seen = peer_state.first_seen;
                 }
                 // Peer is not a boot node
                 Entry::Vacant(entry) => {
