@@ -1,0 +1,92 @@
+[package]
+name = "chainsync-loadtest"
+version = "0.0.0"
+authors = ["Near Inc <hello@nearprotocol.com>"]
+publish = false
+# Please update rust-toolchain.toml as well when changing version here:
+rust-version = "1.56.0"
+edition = "2021"
+default-run = "chainsync-loadtest"
+
+[[bin]]
+path = "src/main.rs"
+name = "chainsync-loadtest"
+
+[dependencies]
+ansi_term = "0.12"
+clap = "=3.0.0-beta.2"
+actix = "=0.11.0-beta.2"
+sysinfo = { git = "https://github.com/near/sysinfo", rev = "3cb97ee79a02754407d2f0f63628f247d7c65e7b" }
+tracing = "0.1.13"
+tracing-subscriber = "0.2.4"
+openssl-probe = "0.1.2"
+near-rust-allocator-proxy = { version = "0.4", optional = true }
+once_cell = "1.5.2"
+futures = "0.3"
+tikv-jemallocator = { version = "0.4.0", optional = true }
+shell-escape = "0.1.5"
+anyhow = "1.0.51"
+awc = "3.0.0-beta.5"
+actix_derive = "=0.6.0-beta.1" # Pinned dependency in addition to actix dependecy (remove this line once the pinning is not needed)
+actix-web = "=4.0.0-beta.6"
+actix-rt = "2"
+byteorder = "1.2"
+easy-ext = "0.2"
+chrono = { version = "0.4.4", features = ["serde"] }
+hyper = { version = "0.14", features = ["full"] }
+hyper-tls = "0.5.0"
+rand = "0.7"
+rayon = "1.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "3"
+borsh = "0.9"
+thiserror = "1.0"
+tokio = { version = "1.1", features = ["fs"] }
+smart-default = "0.6"
+num-rational = { version = "0.3", features = ["serde"] }
+lazy-static-include = "3"
+tempfile = "3"
+indicatif = "0.15.0"
+xz2 = "0.1.6"
+log = "0.4"
+lru = "0.7.2"
+
+
+near-metrics = { path = "../../core/metrics" }
+near-chain-configs = { path = "../../core/chain-configs" }
+near-client-primitives = { path = "../../chain/client-primitives" }
+near-state-viewer = { path = "../../test-utils/state-viewer", package = "state-viewer" }
+near-crypto = { path = "../../core/crypto" }
+near-primitives = { path = "../../core/primitives" }
+near-store = { path = "../../core/store" }
+node-runtime = { path = "../../runtime/runtime" }
+near-chain = { path = "../../chain/chain" }
+near-chunks = { path = "../../chain/chunks" }
+near-pool = { path = "../../chain/pool" }
+near-network = { path = "../../chain/network" }
+near-jsonrpc = { path = "../../chain/jsonrpc", optional = true }
+near-rosetta-rpc = { path = "../../chain/rosetta-rpc", optional = true }
+near-telemetry = { path = "../../chain/telemetry" }
+near-epoch-manager = { path = "../../chain/epoch_manager" }
+near-performance-metrics = { path = "../../utils/near-performance-metrics" }
+near-performance-metrics-macros = { path = "../../utils/near-performance-metrics-macros" }
+near-vm-runner = { path = "../../runtime/near-vm-runner"}
+near-network-primitives = { path = "../../chain/network-primitives" }
+
+delay-detector = { path = "../../tools/delay_detector", optional = true }
+
+[dev-dependencies]
+near-logger-utils = { path = "../../test-utils/logger" }
+near-actix-test-utils = { path = "../../test-utils/actix-test-utils" }
+testlib = { path = "../../test-utils/testlib" }
+near-jsonrpc-primitives = { path = "../../chain/jsonrpc-primitives" }
+primitive-types = "0.10"
+
+[features]
+default = ["jemalloc"]
+
+jemalloc = ["tikv-jemallocator"]
+
+[package.metadata.workspaces]
+independent = true
