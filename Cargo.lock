@@ -782,6 +782,7 @@ dependencies = [
  "near-chain",
  "near-chain-configs",
  "near-chunks",
+ "near-client",
  "near-client-primitives",
  "near-crypto",
  "near-epoch-manager",

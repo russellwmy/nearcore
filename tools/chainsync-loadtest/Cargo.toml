@@ -53,6 +53,7 @@ log = "0.4"
 lru = "0.7.2"
 
 
+near-client = { path = "../../chain/client" }
 near-metrics = { path = "../../core/metrics" }
 near-chain-configs = { path = "../../core/chain-configs" }
 near-client-primitives = { path = "../../chain/client-primitives" }

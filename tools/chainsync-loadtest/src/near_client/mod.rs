@@ -13,7 +13,6 @@ pub use crate::near_client::view_client::{start_view_client, ViewClientActor};
 mod chunks_delay_tracker;
 mod client;
 mod client_actor;
-mod info;
 mod metrics;
 pub mod sync;
 mod view_client;
