@@ -250,34 +250,29 @@ impl HeaderSync {
 
             if all_headers_received {
                 self.stalling_ts = None;
-            } else {
-                if let Some(ref stalling_ts) = self.stalling_ts {
-                    if let Some(ref peer) = self.syncing_peer {
-                        match sync_status {
-                            SyncStatus::HeaderSync { highest_height, .. } => {
-                                if now > *stalling_ts + self.stall_ban_timeout
-                                    && *highest_height == peer.chain_info.height
-                                {
-                                    warn!(target: "sync", "Sync: ban a fraudulent peer: {}, claimed height: {}",
-                                        peer.peer_info, peer.chain_info.height);
-                                    self.network_adapter.do_send(
-                                        PeerManagerMessageRequest::NetworkRequests(
-                                            NetworkRequests::BanPeer {
-                                                peer_id: peer.peer_info.id.clone(),
-                                                ban_reason: near_network_primitives::types::ReasonForBan::HeightFraud,
-                                            },
-                                        ),
-                                    );
-                                    // This peer is fraudulent, let's skip this beat and wait for
-                                    // the next one when this peer is not in the list anymore.
-                                    self.syncing_peer = None;
-                                    return false;
-                                }
-                            }
-                            _ => (),
-                        }
-                    }
+            } else if let Some(peer) = (||{
+                let stalling_ts = self.stalling_ts.as_ref()?;
+                let peer = self.syncing_peer.clone()?; 
+                let highest_height = (if let SyncStatus::HeaderSync { highest_height, ..} = sync_status { Some(highest_height) } else { None })?;
+                if now <= *stalling_ts + self.stall_ban_timeout || *highest_height != peer.chain_info.height {
+                    return None
                 }
+                self.syncing_peer = None;
+                return Some(peer);
+            })() {
+                warn!(target: "sync", "Sync: ban a fraudulent peer: {}, claimed height: {}",
+                    peer.peer_info, peer.chain_info.height);
+                self.network_adapter.do_send(
+                    PeerManagerMessageRequest::NetworkRequests(
+                        NetworkRequests::BanPeer {
+                            peer_id: peer.peer_info.id.clone(),
+                            ban_reason: near_network_primitives::types::ReasonForBan::HeightFraud,
+                        },
+                    ),
+                );
+                // This peer is fraudulent, let's skip this beat and wait for
+                // the next one when this peer is not in the list anymore.
+                return false;
             }
             self.syncing_peer = None;
             true
@@ -561,6 +556,10 @@ impl BlockSync {
     }
 
     /// Check if we should run block body sync and ask for more full blocks.
+    // true if we are not waiting for a response for a block, i.e. when
+    // - there was no previous request
+    // - the request is no longer relevant
+    // - request timed out
     fn block_sync_due(&mut self, chain: &Chain) -> Result<bool, near_chain::Error> {
         match &self.last_request {
             None => Ok(true),
@@ -1569,83 +1568,5 @@ mod test {
                 partial_edge_info: Default::default(),
             })
             .collect()
-    }
-
-    #[test]
-    fn test_block_sync() {
-        let network_adapter = Arc::new(MockPeerManagerAdapter::default());
-        let block_fetch_horizon = 10;
-        let mut block_sync = BlockSync::new(network_adapter.clone(), block_fetch_horizon, false);
-        let mut chain_genesis = ChainGenesis::test();
-        chain_genesis.epoch_length = 100;
-        let mut env = TestEnv::builder(chain_genesis).clients_count(2).build();
-        let mut blocks = vec![];
-        for i in 1..21 {
-            let block = env.clients[0].produce_block(i).unwrap().unwrap();
-            blocks.push(block.clone());
-            env.process_block(0, block, Provenance::PRODUCED);
-        }
-        let block_headers = blocks.iter().map(|b| b.header().clone()).collect::<Vec<_>>();
-        let peer_infos = create_peer_infos(2);
-        env.clients[1].chain.sync_block_headers(block_headers, &mut |_| unreachable!()).unwrap();
-
-        for block in blocks.iter().take(5) {
-            let is_state_sync =
-                block_sync.block_sync(&mut env.clients[1].chain, &peer_infos).unwrap();
-            assert!(!is_state_sync);
-
-            let requested_block_hashes =
-                collect_hashes_from_network_adapter(network_adapter.clone());
-            assert_eq!(
-                requested_block_hashes,
-                [block].iter().map(|x| *x.hash()).collect::<HashSet<_>>()
-            );
-
-            env.process_block(1, block.clone(), Provenance::NONE);
-        }
-
-        // Receive all blocks. Should not request more.
-        for i in 5..21 {
-            env.process_block(1, blocks[i - 1].clone(), Provenance::NONE);
-        }
-        block_sync.block_sync(&mut env.clients[1].chain, &peer_infos).unwrap();
-        let requested_block_hashes = collect_hashes_from_network_adapter(network_adapter);
-        assert!(requested_block_hashes.is_empty());
-    }
-
-    #[test]
-    fn test_block_sync_archival() {
-        let network_adapter = Arc::new(MockPeerManagerAdapter::default());
-        let block_fetch_horizon = 10;
-        let mut block_sync = BlockSync::new(network_adapter.clone(), block_fetch_horizon, true);
-        let mut chain_genesis = ChainGenesis::test();
-        chain_genesis.epoch_length = 5;
-        let mut env = TestEnv::builder(chain_genesis).clients_count(2).build();
-        let mut blocks = vec![];
-        for i in 1..31 {
-            let block = env.clients[0].produce_block(i).unwrap().unwrap();
-            blocks.push(block.clone());
-            env.process_block(0, block, Provenance::PRODUCED);
-        }
-        let block_headers = blocks.iter().map(|b| b.header().clone()).collect::<Vec<_>>();
-        let peer_infos = create_peer_infos(2);
-        env.clients[1].chain.sync_block_headers(block_headers, &mut |_| unreachable!()).unwrap();
-        let is_state_sync = block_sync.block_sync(&mut env.clients[1].chain, &peer_infos).unwrap();
-        assert!(!is_state_sync);
-        let requested_block_hashes = collect_hashes_from_network_adapter(network_adapter.clone());
-        // We don't have archival peers, and thus cannot request any blocks
-        assert_eq!(requested_block_hashes, HashSet::new());
-
-        let mut peer_infos = create_peer_infos(2);
-        for peer in peer_infos.iter_mut() {
-            peer.chain_info.archival = true;
-        }
-        let is_state_sync = block_sync.block_sync(&mut env.clients[1].chain, &peer_infos).unwrap();
-        assert!(!is_state_sync);
-        let requested_block_hashes = collect_hashes_from_network_adapter(network_adapter);
-        assert_eq!(
-            requested_block_hashes,
-            blocks.iter().take(1).map(|b| *b.hash()).collect::<HashSet<_>>()
-        );
     }
 }
