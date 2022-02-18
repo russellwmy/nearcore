@@ -156,16 +156,6 @@ impl Handler<GetNetworkInfo> for ClientActor {
 }
 
 impl ClientActor {
-    /// Check whether need to (continue) sync.
-    /// Also return higher height with known peers at that height.
-    fn syncing_info(&self) -> Result<(bool, u64), near_chain::Error> {
-        let head = self.client.chain.head()?;
-        if let Some(full_peer_info) = self.network_info.highest_height_peers.choose(&mut thread_rng()) {
-            return Ok((true, full_peer_info.chain_info.height));
-        }
-        return Ok((false, 0));
-    }
-    
     /// Starts syncing and then switches to either syncing or regular mode.
     fn sync_loop(&mut self, ctx: &mut Context<ClientActor>) {
         let wait_period = match self.sync() {
@@ -189,7 +179,9 @@ impl ClientActor {
             }
             self.sync_started = true;
         }
-        let (_, highest_height) = self.syncing_info()?;
+        let head = self.client.chain.head()?;
+        let peer = self.network_info.highest_height_peers.choose(&mut thread_rng()).ok_or::<Error>("no peers".to_string().into())?;
+        let highest_height = peer.chain_info.height;
 
         // Run each step of syncing separately.
         // header_sync.run() fails only if header_head() fails.
