@@ -61,12 +61,6 @@ pub const EPOCH_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_millis(1_000);
 pub const EPOCH_SYNC_PEER_TIMEOUT: Duration = Duration::from_millis(10);
 
 pub struct Client {
-    /// Adversarial controls
-    #[cfg(feature = "test_features")]
-    pub adv_produce_blocks: bool,
-    #[cfg(feature = "test_features")]
-    pub adv_produce_blocks_only_valid: bool,
-
     pub config: ClientConfig,
     pub sync_status: SyncStatus,
     pub chain: Chain,
