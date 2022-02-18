@@ -1,64 +1,62 @@
-use super::DEFAULT_HOME;
 use clap::{AppSettings, Clap};
 use futures::future::FutureExt;
 use near_chain_configs::GenesisValidationMode;
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::Path;
 use std::{env, io};
 use tracing::metadata::LevelFilter;
-use tracing::{info};
+use tracing::{info,error};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Clap, Debug)]
 #[clap(setting = AppSettings::SubcommandRequiredElseHelp)]
 pub(super) struct Cmd {
+    #[clap(long)]
+    pub chain_id : String,
     /// Sets verbose logging for the given target, or for all targets
     /// if "debug" is given.
     #[clap(long, name = "target")]
     verbose: Option<String>,
     /// Directory for config and data.
-    #[clap(long, parse(from_os_str), default_value_os = DEFAULT_HOME.as_os_str())]
-    home: PathBuf,
     /// Skips consistency checks of the 'genesis.json' file upon startup.
     /// Let's you start `neard` slightly faster.
     #[clap(long)]
     pub unsafe_fast_startup: bool,
-
-    /// Set the boot nodes to bootstrap network from.
-    #[clap(long)]
-    boot_nodes: Option<String>,
-    /// Customize network listening address (useful for running multiple nodes on the same machine).
-    #[clap(long)]
-    network_addr: Option<SocketAddr>,
 }
 
 impl Cmd {
     pub(super) fn parse_and_run() {
         let cmd = Self::parse();
         init_logging(cmd.verbose.as_deref());
-        let home_dir = &cmd.home;
+        
+		let home_dir = Path::new("/tmp");
         let genesis_validation = if cmd.unsafe_fast_startup {
             GenesisValidationMode::UnsafeFast
         } else {
             GenesisValidationMode::Full
         };
+		if let Err(e) = nearcore::init_configs(
+            home_dir,
+            Some(&cmd.chain_id),
+            /*account_id = */ None,
+            /*test_seed = */ None,
+            /*num_shards = <unused>*/1,
+            /*fast = <unused>*/false,
+			/*genesis =*/ None,
+			/*should_download_genesis=*/true,
+			/*download_genesis_url=*/None,
+            /*should_download_config=*/true,
+            /*download_config_url=*/None,
+            /*boot_nodes*/None,
+            /*max_gas_burnt_view=*/None,
+        ) {
+            error!("Failed to initialize configs: {:#}", e);
+        }
 
         // Load configs from home.
-        let mut near_config = crate::nearcore::config::load_config(home_dir, genesis_validation);
+        let mut near_config = nearcore::config::load_config(home_dir, genesis_validation);
 
         // Set current version in client config.
         near_config.client_config.version = super::NEARD_VERSION.clone();
-        if let Some(boot_nodes) = cmd.boot_nodes {
-            if !boot_nodes.is_empty() {
-                near_config.network_config.boot_nodes = boot_nodes
-                    .split(',')
-                    .map(|chunk| chunk.parse().expect("Failed to parse PeerInfo"))
-                    .collect();
-            }
-        }
-        if let Some(network_addr) = cmd.network_addr {
-            near_config.network_config.addr = Some(network_addr);
-        }
         let sys = actix::System::new();
         sys.block_on(async move {
             crate::nearcore::start_with_config(home_dir, near_config).expect("start_with_config");

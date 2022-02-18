@@ -801,6 +801,7 @@ dependencies = [
  "near-store",
  "near-telemetry",
  "near-vm-runner",
+ "nearcore",
  "node-runtime",
  "num-rational",
  "once_cell",

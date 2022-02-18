@@ -1,9 +1,3 @@
-pub mod append_only_map;
-pub mod config;
-pub mod migrations;
-mod runtime;
-mod shard_tracker;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,11 +17,11 @@ use near_primitives::network::PeerId;
 use near_primitives::epoch_manager::RngSeed;
 use near_store::{Store,db};
 
-pub use crate::nearcore::config::{
+pub use nearcore::config::{
     init_configs, load_config, load_test_config, NearConfig, NEAR_BASE,
 };
-pub use crate::nearcore::runtime::NightshadeRuntime;
-pub use crate::nearcore::shard_tracker::TrackedConfig;
+pub use nearcore::NightshadeRuntime;
+pub use nearcore::TrackedConfig;
 
 pub fn get_default_home() -> PathBuf {
     if let Ok(near_home) = std::env::var("NEAR_HOME") {

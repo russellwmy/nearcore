@@ -61,6 +61,7 @@ near-state-viewer = { path = "../../test-utils/state-viewer", package = "state-v
 near-crypto = { path = "../../core/crypto" }
 near-primitives = { path = "../../core/primitives" }
 near-store = { path = "../../core/store" }
+nearcore = { path = "../../nearcore" }
 node-runtime = { path = "../../runtime/runtime" }
 near-chain = { path = "../../chain/chain" }
 near-chunks = { path = "../../chain/chunks" }
