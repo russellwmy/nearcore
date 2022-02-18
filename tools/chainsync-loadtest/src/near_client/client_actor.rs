@@ -1,4 +1,7 @@
 //! Client actor orchestrates Client and facilitates network connection.
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
 
 use std::time;
 
@@ -35,9 +38,6 @@ use rand::{thread_rng};
 use std::sync::Arc;
 use std::time::{Duration};
 
-/// Multiplier on `max_block_time` to wait until deciding that chain stalled.
-const STATUS_WAIT_TIME_MULTIPLIER: u64 = 10;
-
 pub struct ClientActor {
     client: Client,
     network_info: NetworkInfo,
@@ -57,19 +57,14 @@ impl ClientActor {
         runtime_adapter: Arc<dyn RuntimeAdapter>,
         node_id: PeerId,
         network_adapter: Arc<dyn PeerManagerAdapter>,
-        validator_signer: Option<Arc<dyn ValidatorSigner>>,
         enable_doomslug: bool,
         rng_seed: RngSeed,
     ) -> Result<Self, Error> {
-        if let Some(vs) = &validator_signer {
-            info!(target: "client", "Starting validator node: {}", vs.validator_id());
-        }
         let client = Client::new(
             config,
             chain_genesis,
             runtime_adapter,
             network_adapter.clone(),
-            validator_signer,
             enable_doomslug,
             rng_seed,
         )?;
@@ -137,80 +132,8 @@ impl Handler<NetworkClientMessages> for ClientActor {
 
 impl Handler<Status> for ClientActor {
     type Result = Result<StatusResponse, StatusError>;
-
-    #[perf]
     fn handle(&mut self, msg: Status, _ctx: &mut Context<Self>) -> Self::Result {
-        let head = self.client.chain.head()?;
-        let head_header = self.client.chain.get_block_header(&head.last_block_hash)?;
-        let latest_block_time = head_header.raw_timestamp();
-        let latest_state_root = (*head_header.prev_state_root()).into();
-        if msg.is_health_check {
-            let now = Utc::now();
-            let block_timestamp = from_timestamp(latest_block_time);
-            if now > block_timestamp {
-                let elapsed = (now - block_timestamp).to_std().unwrap();
-                if elapsed
-                    > Duration::from_millis(
-                        self.client.config.max_block_production_delay.as_millis() as u64
-                            * STATUS_WAIT_TIME_MULTIPLIER,
-                    )
-                {
-                    return Err(StatusError::NoNewBlocks { elapsed });
-                }
-            }
-
-            if self.client.sync_status.is_syncing() {
-                return Err(StatusError::NodeIsSyncing);
-            }
-        }
-        let validators = self
-            .client
-            .runtime_adapter
-            .get_epoch_block_producers_ordered(&head.epoch_id, &head.last_block_hash)?
-            .into_iter()
-            .map(|(validator_stake, is_slashed)| ValidatorInfo {
-                account_id: validator_stake.take_account_id(),
-                is_slashed,
-            })
-            .collect();
-
-        let protocol_version =
-            self.client.runtime_adapter.get_epoch_protocol_version(&head.epoch_id)?;
-
-        let validator_account_id =
-            self.client.validator_signer.as_ref().map(|vs| vs.validator_id()).cloned();
-
-        let mut earliest_block_hash = None;
-        let mut earliest_block_height = None;
-        let mut earliest_block_time = None;
-        if let Some(earliest_block_hash_value) = self.client.chain.get_earliest_block_hash()? {
-            earliest_block_hash = Some(earliest_block_hash_value);
-            if let Ok(earliest_block) =
-                self.client.chain.get_block_header(&earliest_block_hash_value)
-            {
-                earliest_block_height = Some(earliest_block.height());
-                earliest_block_time = Some(earliest_block.timestamp());
-            }
-        }
-        Ok(StatusResponse {
-            version: self.client.config.version.clone(),
-            protocol_version,
-            latest_protocol_version: PROTOCOL_VERSION,
-            chain_id: self.client.config.chain_id.clone(),
-            rpc_addr: self.client.config.rpc_addr.clone(),
-            validators,
-            sync_info: StatusSyncInfo {
-                latest_block_hash: head.last_block_hash.into(),
-                latest_block_height: head.height,
-                latest_state_root,
-                latest_block_time: from_timestamp(latest_block_time),
-                syncing: self.client.sync_status.is_syncing(),
-                earliest_block_hash,
-                earliest_block_height,
-                earliest_block_time,
-            },
-            validator_account_id,
-        })
+        return Err(StatusError::NodeIsSyncing);
     }
 }
 
@@ -237,40 +160,10 @@ impl ClientActor {
     /// Also return higher height with known peers at that height.
     fn syncing_info(&self) -> Result<(bool, u64), near_chain::Error> {
         let head = self.client.chain.head()?;
-
-        let full_peer_info = if let Some(full_peer_info) =
-            self.network_info.highest_height_peers.choose(&mut thread_rng())
-        {
-            full_peer_info
-        } else {
-            if !self.client.config.skip_sync_wait {
-                warn!(target: "client", "Sync: no peers available, disabling sync");
-            }
-            return Ok((false, 0));
-        };
-
-        let mut is_syncing = self.client.sync_status.is_syncing();
-        if is_syncing {
-            if full_peer_info.chain_info.height <= head.height {
-                info!(target: "client", "Sync: synced at {} [{}], {}, highest height peer: {}",
-                      head.height, format_hash(head.last_block_hash),
-                      full_peer_info.peer_info.id, full_peer_info.chain_info.height
-                );
-                is_syncing = false;
-            }
-        } else {
-            if full_peer_info.chain_info.height > head.height + self.client.config.sync_height_threshold {
-                info!(
-                    target: "client",
-                    "Sync: height: {}, peer id/height: {}/{}, enabling sync",
-                    head.height,
-                    full_peer_info.peer_info.id,
-                    full_peer_info.chain_info.height,
-                );
-                is_syncing = true;
-            }
+        if let Some(full_peer_info) = self.network_info.highest_height_peers.choose(&mut thread_rng()) {
+            return Ok((true, full_peer_info.chain_info.height));
         }
-        Ok((is_syncing, full_peer_info.chain_info.height))
+        return Ok((false, 0));
     }
     
     /// Starts syncing and then switches to either syncing or regular mode.
@@ -302,14 +195,12 @@ impl ClientActor {
         // header_sync.run() fails only if header_head() fails.
         // returns Ok whether or not headers are synced or requested for next headers
         self.client.header_sync.run(
-            &mut self.client.sync_status,
             &mut self.client.chain,
             highest_height,
             &self.network_info.highest_height_peers
         )?;
         // Returns true if state_sync is needed (we gave up on block syncing).
         self.client.block_sync.run(
-            &mut self.client.sync_status,
             &mut self.client.chain,
             highest_height,
             &self.network_info.highest_height_peers
@@ -320,46 +211,15 @@ impl ClientActor {
 
 impl Handler<ApplyStatePartsResponse> for ClientActor {
     type Result = ();
-
-    fn handle(&mut self, msg: ApplyStatePartsResponse, _: &mut Self::Context) -> Self::Result {
-        if let Some((sync, _, _)) = self.client.catchup_state_syncs.get_mut(&msg.sync_hash) {
-            // We are doing catchup
-            sync.set_apply_result(msg.shard_id, msg.apply_result);
-        } else {
-            self.client.state_sync.set_apply_result(msg.shard_id, msg.apply_result);
-        }
-    }
+    fn handle(&mut self, msg: ApplyStatePartsResponse, _: &mut Self::Context) -> Self::Result {}
 }
 
 impl Handler<BlockCatchUpResponse> for ClientActor {
     type Result = ();
-
-    fn handle(&mut self, msg: BlockCatchUpResponse, _: &mut Self::Context) -> Self::Result {
-        if let Some((_, _, blocks_catch_up_state)) =
-            self.client.catchup_state_syncs.get_mut(&msg.sync_hash)
-        {
-            let saved_store_update = blocks_catch_up_state
-                .scheduled_blocks
-                .remove(&msg.block_hash)
-                .expect("block caught up, but is not in processing");
-            blocks_catch_up_state
-                .processed_blocks
-                .insert(msg.block_hash, (saved_store_update, msg.results));
-        } else {
-            panic!("block catch up processing result from unknown sync hash");
-        }
-    }
+    fn handle(&mut self, msg: BlockCatchUpResponse, _: &mut Self::Context) -> Self::Result {}
 }
 
 impl Handler<StateSplitResponse> for ClientActor {
     type Result = ();
-
-    fn handle(&mut self, msg: StateSplitResponse, _: &mut Self::Context) -> Self::Result {
-        if let Some((sync, _, _)) = self.client.catchup_state_syncs.get_mut(&msg.sync_hash) {
-            // We are doing catchup
-            sync.set_split_result(msg.shard_id, msg.new_state_roots);
-        } else {
-            self.client.state_sync.set_split_result(msg.shard_id, msg.new_state_roots);
-        }
-    }
+    fn handle(&mut self, msg: StateSplitResponse, _: &mut Self::Context) -> Self::Result {}
 }

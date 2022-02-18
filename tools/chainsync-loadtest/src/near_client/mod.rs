@@ -8,11 +8,7 @@ pub use near_client_primitives::types::{
 
 pub use crate::near_client::client::Client;
 pub use crate::near_client::client_actor::{ClientActor};
-pub use crate::near_client::view_client::{start_view_client, ViewClientActor};
 
-mod chunks_delay_tracker;
 mod client;
 mod client_actor;
-mod metrics;
 pub mod sync;
-mod view_client;

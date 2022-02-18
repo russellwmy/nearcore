@@ -85,7 +85,6 @@ pub fn start_with_config(home_dir: &Path, config: NearConfig) -> Result<(), anyh
                 runtime,
                 node_id,
                 network_adapter,
-                config.validator_signer,
                 true,
                 random_seed_from_thread(),
             )

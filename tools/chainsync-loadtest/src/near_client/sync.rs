@@ -1,6 +1,10 @@
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
+
 use near_chain::{near_chain_primitives, ChainStoreAccess, Error};
 use std::cmp::min;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::ops::Add;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -17,12 +21,10 @@ use near_chain::{Chain, RuntimeAdapter};
 use near_network::types::{FullPeerInfo, NetworkRequests, NetworkResponses, PeerManagerAdapter};
 use near_primitives::block::Tip;
 use near_primitives::hash::CryptoHash;
-use near_primitives::network::PeerId;
 use near_primitives::syncing::get_num_state_parts;
 use near_primitives::time::{Clock, Utc};
-use near_primitives::types::validator_stake::ValidatorStake;
 use near_primitives::types::{
-    AccountId, BlockHeight, BlockHeightDelta, EpochId, ShardId, StateRoot,
+    AccountId, BlockHeight, BlockHeightDelta, ShardId, StateRoot,
 };
 use near_primitives::utils::to_timestamp;
 
@@ -40,8 +42,6 @@ pub const MAX_BLOCK_HEADERS: u64 = 512;
 /// Maximum number of block header hashes to send as part of a locator.
 pub const MAX_BLOCK_HEADER_HASHES: usize = 20;
 
-const BLOCK_REQUEST_TIMEOUT: i64 = 2;
-
 /// Maximum number of state parts to request per peer on each round when node is trying to download the state.
 pub const MAX_STATE_PART_REQUEST: u64 = 16;
 /// Number of state parts already requested stored as pending.
@@ -50,91 +50,12 @@ pub const MAX_PENDING_PART: u64 = MAX_STATE_PART_REQUEST * 10000;
 
 pub const NS_PER_SECOND: u128 = 1_000_000_000;
 
-/// Helper to keep track of the Epoch Sync
-// TODO #3488
-#[allow(dead_code)]
-pub struct EpochSync {
-    network_adapter: Arc<dyn PeerManagerAdapter>,
-    /// Datastructure to keep track of when the last request to each peer was made.
-    /// Peers do not respond to Epoch Sync requests more frequently than once per a certain time
-    /// interval, thus there's no point in requesting more frequently.
-    peer_to_last_request_time: HashMap<PeerId, DateTime<Utc>>,
-    /// Tracks all the peers who have reported that we are already up to date
-    peers_reporting_up_to_date: HashSet<PeerId>,
-    /// The last epoch we are synced to
-    current_epoch_id: EpochId,
-    /// The next epoch id we need to sync
-    next_epoch_id: EpochId,
-    /// The block producers set to validate the light client block view for the next epoch
-    next_block_producers: Vec<ValidatorStake>,
-    /// The last epoch id that we have requested
-    requested_epoch_id: EpochId,
-    /// When and to whom was the last request made
-    last_request_time: DateTime<Utc>,
-    last_request_peer_id: Option<PeerId>,
-
-    /// How long to wait for a response before re-requesting the same light client block view
-    request_timeout: Duration,
-    /// How frequently to send request to the same peer
-    peer_timeout: Duration,
-
-    /// True, if all peers agreed that we're at the last Epoch.
-    /// Only finalization is needed.
-    have_all_epochs: bool,
-    /// Whether the Epoch Sync was performed to completion previously.
-    /// Current state machine allows for only one Epoch Sync.
-    pub done: bool,
-
-    pub sync_hash: CryptoHash,
-
-    received_epoch: bool,
-
-    is_just_started: bool,
-}
-
-impl EpochSync {
-    pub fn new(
-        network_adapter: Arc<dyn PeerManagerAdapter>,
-        genesis_epoch_id: EpochId,
-        genesis_next_epoch_id: EpochId,
-        first_epoch_block_producers: Vec<ValidatorStake>,
-        request_timeout: TimeDuration,
-        peer_timeout: TimeDuration,
-    ) -> Self {
-        Self {
-            network_adapter,
-            peer_to_last_request_time: HashMap::new(),
-            peers_reporting_up_to_date: HashSet::new(),
-            current_epoch_id: genesis_epoch_id.clone(),
-            next_epoch_id: genesis_next_epoch_id,
-            next_block_producers: first_epoch_block_producers,
-            requested_epoch_id: genesis_epoch_id,
-            last_request_time: Clock::utc(),
-            last_request_peer_id: None,
-            request_timeout: Duration::from_std(request_timeout).unwrap(),
-            peer_timeout: Duration::from_std(peer_timeout).unwrap(),
-            received_epoch: false,
-            have_all_epochs: false,
-            done: false,
-            sync_hash: CryptoHash::default(),
-            is_just_started: true,
-        }
-    }
-}
-
 /// Helper to keep track of sync headers.
 /// Handles major re-orgs by finding closest header that matches and re-downloading headers from that point.
 pub struct HeaderSync {
     network_adapter: Arc<dyn PeerManagerAdapter>,
     history_locator: Vec<(BlockHeight, CryptoHash)>,
-    prev_header_sync: (DateTime<Utc>, BlockHeight, BlockHeight, BlockHeight),
     syncing_peer: Option<FullPeerInfo>,
-    stalling_ts: Option<DateTime<Utc>>,
-
-    initial_timeout: Duration,
-    progress_timeout: Duration,
-    stall_ban_timeout: Duration,
-    expected_height_per_second: u64,
 }
 
 impl HeaderSync {
@@ -148,153 +69,24 @@ impl HeaderSync {
         HeaderSync {
             network_adapter,
             history_locator: vec![],
-            prev_header_sync: (Clock::utc(), 0, 0, 0),
             syncing_peer: None,
-            stalling_ts: None,
-            initial_timeout: Duration::from_std(initial_timeout).unwrap(),
-            progress_timeout: Duration::from_std(progress_timeout).unwrap(),
-            stall_ban_timeout: Duration::from_std(stall_ban_timeout).unwrap(),
-            expected_height_per_second,
         }
     }
 
     pub fn run(
         &mut self,
-        sync_status: &mut SyncStatus,
         chain: &mut Chain,
         highest_height: BlockHeight,
         highest_height_peers: &Vec<FullPeerInfo>,
     ) -> Result<(), near_chain::Error> {
         let header_head = chain.header_head()?;
-        if !self.header_sync_due(sync_status, &header_head, highest_height) {
-            return Ok(());
-        }
-
-        let enable_header_sync = match sync_status {
-            SyncStatus::HeaderSync { .. }
-            | SyncStatus::BodySync { .. }
-            | SyncStatus::StateSyncDone => true,
-            SyncStatus::NoSync | SyncStatus::AwaitingPeers | SyncStatus::EpochSync { .. } => {
-                debug!(target: "sync", "Sync: initial transition to Header sync. Header head {} at {}",
-                    header_head.last_block_hash, header_head.height,
-                );
-                self.history_locator.retain(|&x| x.0 == 0);
-                true
-            }
-            SyncStatus::StateSync { .. } => false,
-        };
-
-        if enable_header_sync {
-            *sync_status =
-                SyncStatus::HeaderSync { current_height: header_head.height, highest_height };
-            self.syncing_peer = None;
-            if let Some(peer) = highest_height_peers.choose(&mut thread_rng()).cloned() {
-                if peer.chain_info.height > header_head.height {
-                    self.syncing_peer = self.request_headers(chain, peer);
-                }
+        self.syncing_peer = None;
+        if let Some(peer) = highest_height_peers.choose(&mut thread_rng()).cloned() {
+            if peer.chain_info.height > header_head.height {
+                self.syncing_peer = self.request_headers(chain, peer);
             }
         }
-
         Ok(())
-    }
-
-    fn compute_expected_height(
-        &self,
-        old_height: BlockHeight,
-        time_delta: Duration,
-    ) -> BlockHeight {
-        (old_height as u128
-            + (time_delta.num_nanoseconds().unwrap() as u128
-                * self.expected_height_per_second as u128
-                / NS_PER_SECOND)) as u64
-    }
-
-    fn header_sync_due(
-        &mut self,
-        sync_status: &SyncStatus,
-        header_head: &Tip,
-        highest_height: BlockHeight,
-    ) -> bool {
-        let now = Clock::utc();
-        let (timeout, old_expected_height, prev_height, prev_highest_height) =
-            self.prev_header_sync;
-
-        // Received all necessary header, can request more.
-        let all_headers_received =
-            header_head.height >= min(prev_height + MAX_BLOCK_HEADERS - 4, prev_highest_height);
-
-        // Did we receive as many headers as we expected from the peer? Request more or ban peer.
-        let stalling = header_head.height <= old_expected_height && now > timeout;
-
-        // Always enable header sync on initial state transition from NoSync / NoSyncFewBlocksBehind / AwaitingPeers.
-        let force_sync = match sync_status {
-            SyncStatus::NoSync | SyncStatus::AwaitingPeers => true,
-            _ => false,
-        };
-
-        if force_sync || all_headers_received || stalling {
-            self.prev_header_sync = (
-                now + self.initial_timeout,
-                self.compute_expected_height(header_head.height, self.initial_timeout),
-                header_head.height,
-                highest_height,
-            );
-
-            if stalling {
-                if self.stalling_ts.is_none() {
-                    self.stalling_ts = Some(now);
-                }
-            } else {
-                self.stalling_ts = None;
-            }
-
-            if all_headers_received {
-                self.stalling_ts = None;
-            } else if let Some(peer) = (||{
-                let stalling_ts = self.stalling_ts.as_ref()?;
-                let peer = self.syncing_peer.clone()?; 
-                let highest_height = (if let SyncStatus::HeaderSync { highest_height, ..} = sync_status { Some(highest_height) } else { None })?;
-                if now <= *stalling_ts + self.stall_ban_timeout || *highest_height != peer.chain_info.height {
-                    return None
-                }
-                self.syncing_peer = None;
-                return Some(peer);
-            })() {
-                warn!(target: "sync", "Sync: ban a fraudulent peer: {}, claimed height: {}",
-                    peer.peer_info, peer.chain_info.height);
-                self.network_adapter.do_send(
-                    PeerManagerMessageRequest::NetworkRequests(
-                        NetworkRequests::BanPeer {
-                            peer_id: peer.peer_info.id.clone(),
-                            ban_reason: near_network_primitives::types::ReasonForBan::HeightFraud,
-                        },
-                    ),
-                );
-                // This peer is fraudulent, let's skip this beat and wait for
-                // the next one when this peer is not in the list anymore.
-                return false;
-            }
-            self.syncing_peer = None;
-            true
-        } else {
-            // Resetting the timeout as long as we make progress.
-            let ns_time_till_timeout =
-                (to_timestamp(timeout).saturating_sub(to_timestamp(now))) as u128;
-            let remaining_expected_height = (self.expected_height_per_second as u128
-                * ns_time_till_timeout
-                / NS_PER_SECOND) as u64;
-            if header_head.height >= old_expected_height.saturating_sub(remaining_expected_height) {
-                let new_expected_height =
-                    self.compute_expected_height(header_head.height, self.progress_timeout);
-                self.prev_header_sync = (
-                    now + self.progress_timeout,
-                    new_expected_height,
-                    prev_height,
-                    prev_highest_height,
-                );
-            }
-            false
-        }
     }
 
     /// Request headers from a given peer to advance the chain.
@@ -386,15 +178,12 @@ fn get_locator_heights(height: u64) -> Vec<u64> {
 pub struct BlockSyncRequest {
     height: BlockHeight,
     hash: CryptoHash,
-    when: DateTime<Utc>,
 }
 
 /// Helper to track block syncing.
 pub struct BlockSync {
     network_adapter: Arc<dyn PeerManagerAdapter>,
     last_request: Option<BlockSyncRequest>,
-    /// How far to fetch blocks vs fetch state.
-    block_fetch_horizon: BlockHeightDelta,
     /// Whether to enforce block sync
     archive: bool,
 }
@@ -402,54 +191,23 @@ pub struct BlockSync {
 impl BlockSync {
     pub fn new(
         network_adapter: Arc<dyn PeerManagerAdapter>,
-        block_fetch_horizon: BlockHeightDelta,
         archive: bool,
     ) -> Self {
-        BlockSync { network_adapter, last_request: None, block_fetch_horizon, archive }
+        BlockSync { network_adapter, last_request: None, archive }
     }
 
     /// Runs check if block sync is needed, if it's needed and it's too far - sync state is started instead (returning true).
     /// Otherwise requests recent blocks from peers.
     pub fn run(
         &mut self,
-        sync_status: &mut SyncStatus,
         chain: &mut Chain,
         highest_height: BlockHeight,
         highest_height_peers: &[FullPeerInfo],
     ) -> Result<bool, near_chain::Error> {
-        if self.block_sync_due(chain)? {
-            if self.block_sync(chain, highest_height_peers)? {
-                debug!(target: "sync", "Sync: transition to State Sync.");
-                return Ok(true);
-            }
+        if self.block_sync(chain, highest_height_peers)? {
+            debug!(target: "sync", "Sync: transition to State Sync.");
+            return Ok(true);
         }
-
-        let head = chain.head()?;
-        *sync_status = SyncStatus::BodySync { current_height: head.height, highest_height };
-        Ok(false)
-    }
-
-    /// Check if state download is required
-    fn check_state_needed(&self, chain: &Chain) -> Result<bool, near_chain::Error> {
-        let head = chain.head()?;
-        let header_head = chain.header_head()?;
-
-        // If latest block is up to date return early.
-        // No state download is required, neither any blocks need to be fetched.
-        if head.height >= header_head.height {
-            return Ok(false);
-        }
-
-        // Don't run State Sync if header head is not more than one epoch ahead.
-        if head.epoch_id != header_head.epoch_id && head.next_epoch_id != header_head.epoch_id {
-            if head.height < header_head.height.saturating_sub(self.block_fetch_horizon)
-                && !self.archive
-            {
-                // Epochs are different and we are too far from horizon, State Sync is needed
-                return Ok(true);
-            }
-        }
-
         Ok(false)
     }
 
@@ -460,10 +218,6 @@ impl BlockSync {
         chain: &mut Chain,
         highest_height_peers: &[FullPeerInfo],
     ) -> Result<bool, near_chain::Error> {
-        if self.check_state_needed(chain)? {
-            return Ok(true);
-        }
-
         let reference_hash = match &self.last_request {
             Some(request) if chain.is_chunk_orphan(&request.hash) => request.hash,
             _ => chain.head()?.last_block_hash,
@@ -520,7 +274,7 @@ impl BlockSync {
             },
         };
         let next_height = chain.get_block_header(&next_hash)?.height();
-        let request = BlockSyncRequest { height: next_height, hash: next_hash, when: Clock::utc() };
+        let request = BlockSyncRequest { height: next_height, hash: next_hash };
 
         let head = chain.head()?;
         let header_head = chain.header_head()?;
@@ -553,20 +307,6 @@ impl BlockSync {
         self.last_request = Some(request);
 
         Ok(false)
-    }
-
-    /// Check if we should run block body sync and ask for more full blocks.
-    // true if we are not waiting for a response for a block, i.e. when
-    // - there was no previous request
-    // - the request is no longer relevant
-    // - request timed out
-    fn block_sync_due(&mut self, chain: &Chain) -> Result<bool, near_chain::Error> {
-        match &self.last_request {
-            None => Ok(true),
-            Some(request) => Ok(chain.head()?.height >= request.height
-                || chain.is_chunk_orphan(&request.hash)
-                || Clock::utc() - request.when > Duration::seconds(BLOCK_REQUEST_TIMEOUT)),
-        }
     }
 }
 
