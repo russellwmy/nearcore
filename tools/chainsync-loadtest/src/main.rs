@@ -19,17 +19,7 @@ use tracing::metadata::LevelFilter;
 use tracing::{info,error};
 use tracing_subscriber::EnvFilter;
 
-fn init_logging(verbose: Option<&str>) {
-    let env_filter = EnvFilter::from_default_env().add_directive(LevelFilter::INFO.into());
-    tracing_subscriber::fmt::Subscriber::builder()
-        .with_span_events(
-            tracing_subscriber::fmt::format::FmtSpan::ENTER
-                | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
-        )
-        .with_env_filter(env_filter)
-        .with_writer(io::stderr)
-        .init();
-}
+
 
 fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<()> {
     // Always fetch the config.
@@ -60,25 +50,15 @@ fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<()>
 struct Cmd {
     #[clap(long)]
     pub chain_id : String,
-
-    #[clap(long)]
-    pub genesis_cache_path : Option<String>,
-
     #[clap(long)]
     pub start_block_height : usize,
     #[clap(long)]
     pub start_block_hash : String,
-
-    /// Sets verbose logging for the given target, or for all targets
-    /// if "debug" is given.
-    #[clap(long, name = "target")]
-    verbose: Option<String>,
 }
 
 impl Cmd {
     fn parse_and_run() {
         let cmd = Self::parse();
-        init_logging(cmd.verbose.as_deref());
     
         let mut cache_dir = dirs::cache_dir().unwrap();
         cache_dir.push("near_configs");
@@ -126,7 +106,20 @@ impl Cmd {
     }
 }
 
+fn init_logging() {
+    let env_filter = EnvFilter::from_default_env().add_directive(LevelFilter::INFO.into());
+    tracing_subscriber::fmt::Subscriber::builder()
+        .with_span_events(
+            tracing_subscriber::fmt::format::FmtSpan::ENTER
+                | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
+        )
+        .with_env_filter(env_filter)
+        .with_writer(io::stderr)
+        .init();
+}
+
 fn main() {
+    init_logging();
     openssl_probe::init_ssl_cert_env_vars();
     Cmd::parse_and_run();
 }
