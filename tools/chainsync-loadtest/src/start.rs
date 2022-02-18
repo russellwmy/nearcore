@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
+use std::path::{Path};
 use std::sync::Arc;
 
 use rand::{Rng};
@@ -22,19 +26,6 @@ pub use nearcore::config::{
 };
 pub use nearcore::NightshadeRuntime;
 pub use nearcore::TrackedConfig;
-
-pub fn get_default_home() -> PathBuf {
-    if let Ok(near_home) = std::env::var("NEAR_HOME") {
-        return near_home.into();
-    }
-
-    if let Some(mut home) = dirs::home_dir() {
-        home.push(".near");
-        return home;
-    }
-
-    PathBuf::default()
-}
 
 /// Returns random seed sampled from the current thread
 pub fn random_seed_from_thread() -> RngSeed {

@@ -36,20 +36,6 @@ use near_network::types::PeerManagerMessageRequest;
 use near_network_primitives::types::AccountOrPeerIdOrHash;
 use near_primitives::shard_layout::ShardUId;
 
-/// Maximum number of block headers send over the network.
-pub const MAX_BLOCK_HEADERS: u64 = 512;
-
-/// Maximum number of block header hashes to send as part of a locator.
-pub const MAX_BLOCK_HEADER_HASHES: usize = 20;
-
-/// Maximum number of state parts to request per peer on each round when node is trying to download the state.
-pub const MAX_STATE_PART_REQUEST: u64 = 16;
-/// Number of state parts already requested stored as pending.
-/// This number should not exceed MAX_STATE_PART_REQUEST times (number of peers in the network).
-pub const MAX_PENDING_PART: u64 = MAX_STATE_PART_REQUEST * 10000;
-
-pub const NS_PER_SECOND: u128 = 1_000_000_000;
-
 /// Helper to keep track of sync headers.
 /// Handles major re-orgs by finding closest header that matches and re-downloading headers from that point.
 pub struct HeaderSync {
