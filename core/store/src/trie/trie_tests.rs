@@ -203,7 +203,7 @@ mod caching_storage_tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod trie_cache_tests {
     use super::*;
     use crate::test_utils::create_test_store;
     use crate::trie::trie_storage::{CachePosition, RawBytesWithCost, TrieNodeRetrievalCost};
