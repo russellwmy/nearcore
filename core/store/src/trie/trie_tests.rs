@@ -201,3 +201,129 @@ mod caching_storage_tests {
         assert_eq!(storage.cache.len(), 5);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::create_test_store;
+    use crate::trie::trie_storage::{CachePosition, RawBytesWithCost, TrieNodeRetrievalCost};
+    use crate::trie::{TrieCache, TrieCachingStorage};
+    use assert_matches::assert_matches;
+    use near_primitives::hash::hash;
+    use near_primitives::types::TrieCacheState;
+
+    #[test]
+    fn test_put() {
+        let store = create_test_store();
+        let mut trie_cache =
+            TrieCachingStorage::new(store, TrieCache::new(), ShardUId::single_shard());
+        let key = hash(&[0, 1, 2]);
+        let value = vec![1u8];
+
+        trie_cache.put(key, &value);
+        assert_eq!(
+            trie_cache.get_with_cost(&key),
+            RawBytesWithCost { value: Some(Arc::new(*value)), cost: TrieNodeRetrievalCost::Full }
+        );
+
+        let value = vec![2u8];
+        trie_cache.put(key, &value);
+        assert_eq!(
+            trie_cache.get_with_cost(&key),
+            RawBytesWithCost { value: Some(Arc::new(*value)), cost: TrieNodeRetrievalCost::Full }
+        );
+    }
+
+    #[test]
+    fn test_pop() {
+        let store = create_test_store();
+        let mut trie_cache =
+            TrieCachingStorage::new(store, TrieCache::new(), ShardUId::single_shard());
+        let key = hash(&[0, 1, 2]);
+        let value = vec![1u8];
+
+        trie_cache.put(key, &value);
+        assert_eq!(
+            trie_cache.get_with_cost(&key),
+            RawBytesWithCost { value: Some(Arc::new(*value)), cost: TrieNodeRetrievalCost::Full }
+        );
+
+        trie_cache.pop(&key);
+        assert_matches!(trie_cache.get_with_cost(&key), RawBytesWithCost { value: None, .. });
+    }
+
+    #[test]
+    fn test_shard_cache_size() {
+        let store = create_test_store();
+        let mut trie_cache =
+            TrieCachingStorage::new(store, TrieCache::new_with_cap(5), ShardUId::single_shard());
+
+        (0..shard_cache_size as u8 + 1).for_each(|i| trie_cache.put(hash(&[i]), &[i]));
+
+        assert_matches!(
+            trie_cache.get_with_cost(&hash(&[0u8])),
+            RawBytesWithCost { value: None, .. }
+        );
+        (1..shard_cache_size as u8 + 1).for_each(|i| {
+            let value = vec![i];
+            assert_eq!(
+                trie_cache.get_with_cost(&hash(&value)),
+                RawBytesWithCost {
+                    value: Some(Arc::new(*value)),
+                    cost: TrieNodeRetrievalCost::Full
+                }
+            )
+        });
+    }
+
+    #[test]
+    fn test_positions_and_costs() {
+        let store = create_test_store();
+        let mut trie_cache =
+            TrieCachingStorage::new(store, TrieCache::new(), ShardUId::single_shard());
+        let value = vec![1u8];
+        let key = hash(&value);
+
+        assert_matches!(trie_cache.cache_state, TrieCacheState::CachingShard);
+        assert_matches!(trie_cache.get_cache_position(&key), CachePosition::None);
+
+        trie_cache.put(key, &value);
+        assert_matches!(trie_cache.get_cache_position(&key), CachePosition::ShardCache(_));
+
+        trie_cache.set_state(TrieCacheState::CachingChunk);
+        assert_matches!(trie_cache.get_cache_position(&key), CachePosition::ShardCache(_));
+        assert_eq!(
+            trie_cache.get_with_cost(&key),
+            RawBytesWithCost { value: Some(Arc::new(*value)), cost: TrieNodeRetrievalCost::Full }
+        );
+        assert_matches!(trie_cache.get_cache_position(&key), CachePosition::ChunkCache(_));
+        assert_eq!(
+            trie_cache.get_with_cost(&key),
+            RawBytesWithCost { value: Some(Arc::new(*value)), cost: TrieNodeRetrievalCost::Free }
+        );
+
+        trie_cache.pop(&key);
+        assert_matches!(trie_cache.get_cache_position(&key), CachePosition::None);
+    }
+
+    #[test]
+    fn test_movement() {
+        let store = create_test_store();
+        let mut trie_cache =
+            TrieCachingStorage::new(store, TrieCache::new(), ShardUId::single_shard());
+        let value = vec![1u8];
+        let key = hash(&value);
+
+        trie_cache.put(key, &value);
+        assert_matches!(trie_cache.get_cache_position(&key), CachePosition::ShardCache(_));
+
+        trie_cache.set_state(TrieCacheState::CachingChunk);
+        let value = vec![2u8];
+        trie_cache.put(key, &value);
+        assert_matches!(trie_cache.get_cache_position(&key), CachePosition::ChunkCache(_));
+        assert_eq!(
+            trie_cache.get_with_cost(&key),
+            RawBytesWithCost { value: Some(Arc::new(*value)), cost: TrieNodeRetrievalCost::Free }
+        );
+    }
+}
