@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use rand::{Rng};
 
 use log::{debug, error, info, warn};
 use near_primitives::time::Clock;
@@ -50,15 +51,17 @@ use near_primitives::version::PROTOCOL_VERSION;
 pub struct Client {
     pub config: ClientConfig,
     pub chain: Chain,
-    pub doomslug: Doomslug,
     pub runtime_adapter: Arc<dyn RuntimeAdapter>,
     pub shards_mgr: ShardsManager,
-    /// Keeps track of syncing headers.
-    pub header_sync: HeaderSync,
-    /// Keeps track of syncing block.
-    pub block_sync: BlockSync,
     /// A ReedSolomon instance to reconstruct shard.
     pub rs: ReedSolomonWrapper,
+}
+
+/// Returns random seed sampled from the current thread
+pub fn random_seed_from_thread() -> RngSeed {
+    let mut rng_seed: RngSeed = [0; 32];
+    rand::thread_rng().fill(&mut rng_seed);
+    rng_seed
 }
 
 impl Client {
@@ -67,55 +70,23 @@ impl Client {
         chain_genesis: ChainGenesis,
         runtime_adapter: Arc<dyn RuntimeAdapter>,
         network_adapter: Arc<dyn PeerManagerAdapter>,
-        enable_doomslug: bool,
-        rng_seed: RngSeed,
     ) -> Result<Self, Error> {
-        let doomslug_threshold_mode = if enable_doomslug {
-            DoomslugThresholdMode::TwoThirds
-        } else {
-            DoomslugThresholdMode::NoApprovals
-        };
-        let chain = Chain::new(runtime_adapter.clone(), &chain_genesis, doomslug_threshold_mode)?;
+        let chain = Chain::new(runtime_adapter.clone(), &chain_genesis, DoomslugThresholdMode::TwoThirds)?;
         let shards_mgr = ShardsManager::new(
             None,
             runtime_adapter.clone(),
             network_adapter.clone(),
-            rng_seed,
+            random_seed_from_thread(),
         );
         let genesis_block = chain.genesis_block();
-        let header_sync = HeaderSync::new(
-            network_adapter.clone(),
-            config.header_sync_initial_timeout,
-            config.header_sync_progress_timeout,
-            config.header_sync_stall_ban_timeout,
-            config.header_sync_expected_height_per_second,
-        );
-        let block_sync =
-            BlockSync::new(network_adapter.clone(), config.archive);
         let data_parts = runtime_adapter.num_data_parts();
         let parity_parts = runtime_adapter.num_total_parts() - data_parts;
 
-        let doomslug = Doomslug::new(
-            chain.store().largest_target_height()?,
-            config.min_block_production_delay,
-            config.max_block_production_delay,
-            config.max_block_production_delay / 10,
-            config.max_block_wait_delay,
-            None,
-            doomslug_threshold_mode,
-        );
         Ok(Self {
-            #[cfg(feature = "test_features")]
-            adv_produce_blocks: false,
-            #[cfg(feature = "test_features")]
-            adv_produce_blocks_only_valid: false,
             config,
             chain,
-            doomslug,
             runtime_adapter,
             shards_mgr,
-            header_sync,
-            block_sync,
             rs: ReedSolomonWrapper::new(data_parts, parity_parts),
         })
     }

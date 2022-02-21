@@ -4,7 +4,10 @@
 #![allow(dead_code)]
 
 use std::time;
+use std::sync::Mutex;
 
+use near_network::types::PeerManagerMessageRequest;
+use near_primitives::hash::CryptoHash;
 use crate::near_client::client::Client;
 use crate::near_client::StatusResponse;
 use actix::{Actor, Context, Handler};
@@ -22,7 +25,7 @@ use near_client_primitives::types::{
 };
 use near_network::types::{
     NetworkClientMessages, NetworkClientResponses, NetworkInfo, 
-    PeerManagerAdapter, 
+    PeerManagerAdapter, NetworkRequests,
 };
 use near_performance_metrics;
 use near_performance_metrics_macros::{perf, perf_with_debug};
@@ -37,6 +40,58 @@ use rand::seq::SliceRandom;
 use rand::{thread_rng};
 use std::sync::Arc;
 use std::time::{Duration};
+use futures::channel::oneshot;
+
+#[derive(Hash,Eq,PartialEq)]
+pub enum Request {
+    BlockHeaders(PeerId),
+    Block(PeerId,CryptoHash),
+    Other,
+}
+
+impl From<&NetworkRequests> for Request {
+    fn from(r:&NetworkRequests) -> Request {
+        match r {
+            NetworkRequests::BlockRequest{peer_id,hash} => Request::Block(peer_id.clone(),hash.clone()),
+            NetworkRequests::BlockHeadersRequest{peer_id,..} => Request::BlockHeaders(peer_id.clone()),
+            _ => Request::Other,
+        }
+    }
+}
+
+impl From<&NetworkClientMessages> for Request {
+    fn from(m:&NetworkClientMessages) -> Request {
+        match m {
+            NetworkClientMessages::Block(block,peer_id,_) => Request::Block(peer_id.clone(),block.hash().clone()),
+            NetworkClientMessages::BlockHeaders(headers,peer_id) => Request::BlockHeaders(peer_id.clone()),
+            _ => Request::Other,
+        }
+    }
+}
+
+pub struct Network {
+    network_adapter: Arc<dyn PeerManagerAdapter>,
+    in_progress: std::collections::HashMap<Request,Vec<oneshot::Sender<NetworkClientMessages>>>, 
+}
+
+impl Network {
+    pub fn new(network_adapter:Arc<dyn PeerManagerAdapter>) -> Arc<Mutex<Network>> {
+        Arc::new(Mutex::new(Network{
+            network_adapter,
+            in_progress: Default::default(),
+        }))
+    }
+    pub fn call(&mut self, req: NetworkRequests) -> oneshot::Receiver<NetworkClientMessages> {
+        let (send,recv) = oneshot::channel();
+        self.in_progress.entry(From::from(&req)).or_default().push(send);
+        self.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(req));
+        return recv;
+    }
+
+    fn notify(&mut self, msg : NetworkClientMessages) {
+        self.in_progress.entry(From::from(&msg)).or_default().pop().map(|s|s.send(msg));
+    }
+}
 
 pub struct ClientActor {
     client: Client,
@@ -44,10 +99,7 @@ pub struct ClientActor {
     /// Identity that represents this Client at the network level.
     /// It is used as part of the messages that identify this client.
     node_id: PeerId,
-    sync_started: bool,
-
-    #[cfg(feature = "sandbox")]
-    fastforward_delta: Option<near_primitives::types::BlockHeightDelta>,
+    network : Arc<Mutex<Network>>,
 }
 
 impl ClientActor {
@@ -57,16 +109,13 @@ impl ClientActor {
         runtime_adapter: Arc<dyn RuntimeAdapter>,
         node_id: PeerId,
         network_adapter: Arc<dyn PeerManagerAdapter>,
-        enable_doomslug: bool,
-        rng_seed: RngSeed,
+        network: Arc<Mutex<Network>>,
     ) -> Result<Self, Error> {
         let client = Client::new(
             config,
             chain_genesis,
             runtime_adapter,
             network_adapter.clone(),
-            enable_doomslug,
-            rng_seed,
         )?;
 
         Ok(ClientActor {
@@ -82,18 +131,13 @@ impl ClientActor {
                 known_producers: vec![],
                 peer_counter: 0,
             },
-            sync_started: false,
+            network,
         })
     }
 }
 
 impl Actor for ClientActor {
     type Context = Context<Self>;
-
-    fn started(&mut self, ctx: &mut Self::Context) {
-        // Start syncing job.
-        self.sync_loop(ctx);
-    }
 }
 
 impl Handler<NetworkClientMessages> for ClientActor {
@@ -101,32 +145,36 @@ impl Handler<NetworkClientMessages> for ClientActor {
 
     #[perf_with_debug]
     fn handle(&mut self, msg: NetworkClientMessages, _ctx: &mut Context<Self>) -> Self::Result {
-        match msg {
+        if let NetworkClientMessages::NetworkInfo(network_info) = msg {
+            //info!("connected_peers = {}",network_info.num_connected_peers);
+            self.network_info = network_info;
+            return NetworkClientResponses::NoResponse;
+        }
+        return NetworkClientResponses::NoResponse;
+        /*match &msg {
             NetworkClientMessages::Block(_block, _peer_id, _was_requested) => {
-                NetworkClientResponses::NoResponse
             }
-            NetworkClientMessages::BlockHeaders(_headers, _peer_id) => {
-                NetworkClientResponses::NoResponse
+            NetworkClientMessages::BlockHeaders(headers, peer_id) => {
+                let mut heights : Vec<_> = headers.iter().map(|a|a.height()).collect();
+                heights.sort();
+                let l = heights[0];
+                let h = heights.last().unwrap();
+                info!("SYNC {} headers ({} - {}) received from {}",heights.len(),l,h,peer_id);
             }
-            NetworkClientMessages::Transaction{..} => {NetworkClientResponses::NoResponse}
-            NetworkClientMessages::BlockApproval(_approval, _peer_id) => {NetworkClientResponses::NoResponse}
-            NetworkClientMessages::StateResponse(_state_response_info) => {NetworkClientResponses::NoResponse}
-            NetworkClientMessages::EpochSyncResponse(_peer_id, _response) => {NetworkClientResponses::NoResponse}
-            NetworkClientMessages::EpochSyncFinalizationResponse(_peer_id, _response) => {NetworkClientResponses::NoResponse}
-            NetworkClientMessages::PartialEncodedChunkRequest(_part_request_msg, _route_back) => {NetworkClientResponses::NoResponse}
+            NetworkClientMessages::Transaction{..} => {}
+            NetworkClientMessages::BlockApproval(_approval, _peer_id) => {}
+            NetworkClientMessages::StateResponse(_state_response_info) => {}
+            NetworkClientMessages::EpochSyncResponse(_peer_id, _response) => {}
+            NetworkClientMessages::EpochSyncFinalizationResponse(_peer_id, _response) => {}
+            NetworkClientMessages::PartialEncodedChunkRequest(_part_request_msg, _route_back) => {}
             NetworkClientMessages::PartialEncodedChunkResponse(_response) => {
-                NetworkClientResponses::NoResponse
             }
             NetworkClientMessages::PartialEncodedChunk(_partial_encoded_chunk) => {
-                NetworkClientResponses::NoResponse
             }
-            NetworkClientMessages::PartialEncodedChunkForward(_forward) => {NetworkClientResponses::NoResponse}
-            NetworkClientMessages::Challenge(_challenge) => {NetworkClientResponses::NoResponse}
-            NetworkClientMessages::NetworkInfo(network_info) => {
-                self.network_info = network_info;
-                NetworkClientResponses::NoResponse
-            }
-        }
+            NetworkClientMessages::PartialEncodedChunkForward(_forward) => {}
+            NetworkClientMessages::Challenge(_challenge) => {}
+            
+        }*/
     }
 }
 
@@ -156,7 +204,7 @@ impl Handler<GetNetworkInfo> for ClientActor {
 }
 
 impl ClientActor {
-    /// Starts syncing and then switches to either syncing or regular mode.
+    /*/// Starts syncing and then switches to either syncing or regular mode.
     fn sync_loop(&mut self, ctx: &mut Context<ClientActor>) {
         let wait_period = match self.sync() {
             Ok(wait_period) => wait_period,
@@ -174,31 +222,40 @@ impl ClientActor {
     fn sync(&mut self) -> anyhow::Result<time::Duration> {
         if !self.sync_started {
             // Wait for connections reach at least minimum peers unless skipping sync.
-            if self.network_info.num_connected_peers < self.client.config.min_num_peers && !self.client.config.skip_sync_wait {
+            let got = self.network_info.num_connected_peers;
+            let want_min = self.client.config.min_num_peers;
+            if got < want_min  && !self.client.config.skip_sync_wait {
+                info!("SYNC {}/{} peers connected",got,want_min);
                 return Ok(self.client.config.sync_step_period); // TODO: make it an error
             }
+            info!("SYNC STARTING");
             self.sync_started = true;
         }
-        let head = self.client.chain.head()?;
-        let peer = self.network_info.highest_height_peers.choose(&mut thread_rng()).ok_or::<Error>("no peers".to_string().into())?;
-        let highest_height = peer.chain_info.height;
+        if !self.headers_requested {
+            let peer = self.network_info.highest_height_peers.choose(&mut thread_rng()).ok_or::<Error>("no peers".to_string().into())?;
+            let highest_height = peer.chain_info.height;
+            info!("SYNC highest_height = {}",highest_height);
+           
+            self.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
+                NetworkRequests::BlockHeadersRequest {
+                    hashes: vec![self.next_block_hash],
+                    peer_id: peer.peer_info.id.clone(),
+                },
+            ));
+            info!("SYNC headers requested");
+            self.headers_requested = true;
+        }
+        return Ok(time::Duration::from_secs(1));
 
-        // Run each step of syncing separately.
-        // header_sync.run() fails only if header_head() fails.
-        // returns Ok whether or not headers are synced or requested for next headers
-        self.client.header_sync.run(
-            &mut self.client.chain,
-            highest_height,
-            &self.network_info.highest_height_peers
-        )?;
         // Returns true if state_sync is needed (we gave up on block syncing).
-        self.client.block_sync.run(
+        /*self.client.block_sync.run(
             &mut self.client.chain,
             highest_height,
             &self.network_info.highest_height_peers
         )?;
         return Ok(self.client.config.sync_step_period);
-    }
+        */
+    }*/
 }
 
 impl Handler<ApplyStatePartsResponse> for ClientActor {

@@ -7,7 +7,7 @@ pub use near_client_primitives::types::{
 };
 
 pub use crate::near_client::client::Client;
-pub use crate::near_client::client_actor::{ClientActor};
+pub use crate::near_client::client_actor::{ClientActor,Network};
 
 mod client;
 mod client_actor;

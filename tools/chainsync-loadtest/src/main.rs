@@ -5,8 +5,9 @@
 mod start;
 mod near_client;
 
+use std::str::FromStr;
 use near_crypto::{Signer};
-use anyhow::{anyhow};
+use anyhow::{anyhow,Context};
 use near_primitives::version;
 use openssl_probe;
 use clap::{AppSettings, Clap};
@@ -18,8 +19,7 @@ use std::{env, io};
 use tracing::metadata::LevelFilter;
 use tracing::{info,error};
 use tracing_subscriber::EnvFilter;
-
-
+use near_primitives::hash::CryptoHash;
 
 fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<()> {
     // Always fetch the config.
@@ -57,18 +57,17 @@ struct Cmd {
 }
 
 impl Cmd {
-    fn parse_and_run() {
+    fn parse_and_run() -> anyhow::Result<()> {
         let cmd = Self::parse();
+        let start_block_hash = cmd.start_block_hash.parse::<CryptoHash>().map_err(|x|anyhow!(x.to_string()))?;
     
-        let mut cache_dir = dirs::cache_dir().unwrap();
-        cache_dir.push("near_configs");
+        let mut cache_dir = dirs::cache_dir().context("dirs::cache_dir() = None")?;
+        cache_dir.push("ear_configs");
         cache_dir.push(&cmd.chain_id);
 
         info!("downloading configs for chain {}",cmd.chain_id);
         let home_dir = cache_dir.as_path();
-        if let Err(e) = download_configs(&cmd.chain_id,home_dir) {
-            error!("Failed to initialize configs: {:#}", e);
-        }
+        download_configs(&cmd.chain_id,home_dir).context("Failed to initialize configs")?;
 
         info!("load_config({})",cmd.chain_id);
         // Load configs from home.
@@ -81,11 +80,14 @@ impl Cmd {
             build: "unknown".to_string(),
         };
         info!("#boot nodes = {}",near_config.network_config.boot_nodes.len());
-        return;
 
         let sys = actix::System::new();
         sys.block_on(async move {
-            start::start_with_config(home_dir, near_config).expect("start_with_config");
+            start::start_with_config(
+                home_dir,
+                near_config,
+                start_block_hash,
+            ).expect("start_with_config");
 
             let sig = if cfg!(unix) {
                 use tokio::signal::unix::{signal, SignalKind};
@@ -103,6 +105,7 @@ impl Cmd {
             actix::System::current().stop();
         });
         sys.run().unwrap();
+        return anyhow::Ok(())
     }
 }
 
@@ -121,5 +124,7 @@ fn init_logging() {
 fn main() {
     init_logging();
     openssl_probe::init_ssl_cert_env_vars();
-    Cmd::parse_and_run();
+    if let Err(e) = Cmd::parse_and_run() {
+        error!("Cmd::parse_and_run(): {:#}", e);
+    }
 }
