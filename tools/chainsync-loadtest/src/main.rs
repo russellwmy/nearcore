@@ -5,6 +5,7 @@
 mod start;
 mod near_client;
 
+use std::sync::{Arc,Mutex};
 use std::str::FromStr;
 use near_crypto::{Signer};
 use anyhow::{anyhow,Context};
@@ -12,7 +13,8 @@ use near_primitives::version;
 use openssl_probe;
 use clap::{AppSettings, Clap};
 use futures::future::FutureExt;
-use near_chain_configs::GenesisValidationMode;
+use futures::task::SpawnExt;
+use near_chain_configs::{ClientConfig,GenesisValidationMode};
 use nearcore::config;
 use std::path::Path;
 use std::{env, io};
@@ -20,6 +22,7 @@ use tracing::metadata::LevelFilter;
 use tracing::{info,error};
 use tracing_subscriber::EnvFilter;
 use near_primitives::hash::CryptoHash;
+use near_network::types::{NetworkClientMessages,NetworkRequests};
 
 fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<()> {
     // Always fetch the config.
@@ -56,13 +59,34 @@ struct Cmd {
     pub start_block_hash : String,
 }
 
+async fn sync(pool: futures::executor::ThreadPool, config : ClientConfig, network: near_client::Network,  start_block_hash: CryptoHash) -> anyhow::Result<()> {
+    info!("SYNC waiting for peers");
+    let peers = network.info(config.min_num_peers).await?;
+    info!("SYNC start");
+    let mut next_block_hash = start_block_hash;
+    let peer = &peers.highest_height_peers[0];
+    let target_height = peer.chain_info.height;
+    info!("SYNC target_height = {}",target_height);
+    let msg = network.call(NetworkRequests::BlockHeadersRequest{
+        hashes: vec![next_block_hash],
+        peer_id: peer.peer_info.id.clone(),
+    }).await?;
+    let mut headers = if let NetworkClientMessages::BlockHeaders(headers,_) = msg { headers } else { panic!("unexpected message"); };
+    headers.sort_by_key(|h|h.height());
+    if headers.len()==0 { return Err(anyhow!("invalid response: no headers")); }
+    let start_height = headers[0].height();
+    info!("SYNC start_height = {}, {} blocks to process",target_height,target_height-start_height);
+    next_block_hash = headers.last().context("no headers")?.hash().clone();
+    return anyhow::Ok(());
+}
+
 impl Cmd {
     fn parse_and_run() -> anyhow::Result<()> {
         let cmd = Self::parse();
         let start_block_hash = cmd.start_block_hash.parse::<CryptoHash>().map_err(|x|anyhow!(x.to_string()))?;
     
         let mut cache_dir = dirs::cache_dir().context("dirs::cache_dir() = None")?;
-        cache_dir.push("ear_configs");
+        cache_dir.push("near_configs");
         cache_dir.push(&cmd.chain_id);
 
         info!("downloading configs for chain {}",cmd.chain_id);
@@ -80,14 +104,16 @@ impl Cmd {
             build: "unknown".to_string(),
         };
         info!("#boot nodes = {}",near_config.network_config.boot_nodes.len());
-
-        let sys = actix::System::new();
-        sys.block_on(async move {
-            start::start_with_config(
+        return actix::System::new().block_on(async move {
+            let config = near_config.client_config.clone(); 
+            let network = start::start_with_config(
                 home_dir,
                 near_config,
                 start_block_hash,
-            ).expect("start_with_config");
+            ).context("start_with_config")?;
+
+            let pool = futures::executor::ThreadPool::new()?;
+            let handle = pool.spawn_with_handle(sync(pool.clone(),config,network,start_block_hash));
 
             let sig = if cfg!(unix) {
                 use tokio::signal::unix::{signal, SignalKind};
@@ -102,10 +128,9 @@ impl Cmd {
                 "Ctrl+C"
             };
             info!(target: "neard", "Got {}, stopping...", sig);
-            actix::System::current().stop();
+            // TODO: inform the handled funtion that we are stopping + handle.join();
+            return Ok(()); 
         });
-        sys.run().unwrap();
-        return anyhow::Ok(())
     }
 }
 

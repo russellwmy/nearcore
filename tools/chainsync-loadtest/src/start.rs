@@ -28,7 +28,7 @@ pub use nearcore::config::{
 pub use nearcore::NightshadeRuntime;
 pub use nearcore::TrackedConfig;
 
-pub fn start_with_config(home_dir: &Path, config: NearConfig, next_block_hash:CryptoHash) -> Result<Arc<Mutex<Network>>, anyhow::Error> {
+pub fn start_with_config(home_dir: &Path, config: NearConfig, next_block_hash:CryptoHash) -> anyhow::Result<Network> {
     config.network_config.verify().with_context(|| "start_with_config")?;
     let node_id = PeerId::new(config.network_config.public_key.clone());
     let chain_genesis = ChainGenesis::from(&config.genesis);

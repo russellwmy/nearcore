@@ -44,8 +44,9 @@ use futures::channel::oneshot;
 
 #[derive(Hash,Eq,PartialEq)]
 pub enum Request {
-    BlockHeaders(PeerId),
+    BlockHeaders(PeerId,CryptoHash),
     Block(PeerId,CryptoHash),
+    NetworkInfo,
     Other,
 }
 
@@ -53,7 +54,10 @@ impl From<&NetworkRequests> for Request {
     fn from(r:&NetworkRequests) -> Request {
         match r {
             NetworkRequests::BlockRequest{peer_id,hash} => Request::Block(peer_id.clone(),hash.clone()),
-            NetworkRequests::BlockHeadersRequest{peer_id,..} => Request::BlockHeaders(peer_id.clone()),
+            NetworkRequests::BlockHeadersRequest{peer_id,hashes} => {
+                if hashes.len()!=1 { error!("hashes.len() = {}, want {}",hashes.len(),1); }
+                Request::BlockHeaders(peer_id.clone(),hashes[0])
+            }
             _ => Request::Other,
         }
     }
@@ -62,44 +66,93 @@ impl From<&NetworkRequests> for Request {
 impl From<&NetworkClientMessages> for Request {
     fn from(m:&NetworkClientMessages) -> Request {
         match m {
+            NetworkClientMessages::NetworkInfo(_) => Request::NetworkInfo,
             NetworkClientMessages::Block(block,peer_id,_) => Request::Block(peer_id.clone(),block.hash().clone()),
-            NetworkClientMessages::BlockHeaders(headers,peer_id) => Request::BlockHeaders(peer_id.clone()),
+            NetworkClientMessages::BlockHeaders(headers,peer_id) => {
+                match headers.iter().min_by_key(|h|h.height()) {
+                    None => Request::Other,
+                    Some(h) => Request::BlockHeaders(peer_id.clone(),h.prev_hash().clone()),
+                }
+            }
             _ => Request::Other,
         }
     }
 }
 
+#[derive(Clone)]
 pub struct Network {
+    data : Arc<Mutex<NetworkData>>
+}
+
+struct NetworkData {
     network_adapter: Arc<dyn PeerManagerAdapter>,
     in_progress: std::collections::HashMap<Request,Vec<oneshot::Sender<NetworkClientMessages>>>, 
+    info_consumers: Vec<(oneshot::Sender<Arc<NetworkInfo>>,usize)>, 
+    info_ : Arc<NetworkInfo>,
 }
 
 impl Network {
-    pub fn new(network_adapter:Arc<dyn PeerManagerAdapter>) -> Arc<Mutex<Network>> {
-        Arc::new(Mutex::new(Network{
+    pub fn new(network_adapter:Arc<dyn PeerManagerAdapter>) -> Network {
+        Network{data:Arc::new(Mutex::new(NetworkData{
             network_adapter,
+            info_ : Arc::new(NetworkInfo{
+                connected_peers: vec![],
+                num_connected_peers: 0,
+                peer_max_count: 0,
+                highest_height_peers: vec![],
+                sent_bytes_per_sec: 0,
+                received_bytes_per_sec: 0,
+                known_producers: vec![],
+                peer_counter: 0,        
+            }),
+            info_consumers: Default::default(),
             in_progress: Default::default(),
-        }))
+        }))}
     }
-    pub fn call(&mut self, req: NetworkRequests) -> oneshot::Receiver<NetworkClientMessages> {
+    pub fn call(&self, req: NetworkRequests) -> oneshot::Receiver<NetworkClientMessages> {
+        let mut n = self.data.lock().unwrap();
         let (send,recv) = oneshot::channel();
-        self.in_progress.entry(From::from(&req)).or_default().push(send);
-        self.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(req));
+        n.in_progress.entry(From::from(&req)).or_default().push(send);
+        n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(req));
         return recv;
     }
 
-    fn notify(&mut self, msg : NetworkClientMessages) {
-        self.in_progress.entry(From::from(&msg)).or_default().pop().map(|s|s.send(msg));
+    pub fn info(&self, min_peers:usize) -> oneshot::Receiver<Arc<NetworkInfo>> {
+        let (send,recv) = oneshot::channel();
+        let mut n = self.data.lock().unwrap();
+        if n.info_.num_connected_peers>=min_peers {
+            let _ = send.send(n.info_.clone());
+        } else {
+            n.info_consumers.push((send,min_peers));
+        }
+        return recv;
+    }
+
+    fn notify(&self, msg : NetworkClientMessages) {
+        let mut n = self.data.lock().unwrap();
+        if let NetworkClientMessages::NetworkInfo(info) = msg {
+            n.info_ = Arc::new(info);
+            let it = n.info_consumers.split_off(0);
+            for (s,min) in it {
+                if n.info_.num_connected_peers>=min {
+                    let _ = s.send(n.info_.clone());
+                } else {
+                    info!("connected = {}/{}",n.info_.num_connected_peers,min);
+                    n.info_consumers.push((s,min));
+                }
+            }
+            return;
+        }
+        n.in_progress.entry(From::from(&msg)).or_default().pop().map(|s|s.send(msg));
     }
 }
 
 pub struct ClientActor {
     client: Client,
-    network_info: NetworkInfo,
     /// Identity that represents this Client at the network level.
     /// It is used as part of the messages that identify this client.
     node_id: PeerId,
-    network : Arc<Mutex<Network>>,
+    network : Network,
 }
 
 impl ClientActor {
@@ -109,7 +162,7 @@ impl ClientActor {
         runtime_adapter: Arc<dyn RuntimeAdapter>,
         node_id: PeerId,
         network_adapter: Arc<dyn PeerManagerAdapter>,
-        network: Arc<Mutex<Network>>,
+        network: Network,
     ) -> Result<Self, Error> {
         let client = Client::new(
             config,
@@ -121,16 +174,6 @@ impl ClientActor {
         Ok(ClientActor {
             client,
             node_id,
-            network_info: NetworkInfo {
-                connected_peers: vec![],
-                num_connected_peers: 0,
-                peer_max_count: 0,
-                highest_height_peers: vec![],
-                received_bytes_per_sec: 0,
-                sent_bytes_per_sec: 0,
-                known_producers: vec![],
-                peer_counter: 0,
-            },
             network,
         })
     }
@@ -142,14 +185,8 @@ impl Actor for ClientActor {
 
 impl Handler<NetworkClientMessages> for ClientActor {
     type Result = NetworkClientResponses;
-
-    #[perf_with_debug]
     fn handle(&mut self, msg: NetworkClientMessages, _ctx: &mut Context<Self>) -> Self::Result {
-        if let NetworkClientMessages::NetworkInfo(network_info) = msg {
-            //info!("connected_peers = {}",network_info.num_connected_peers);
-            self.network_info = network_info;
-            return NetworkClientResponses::NoResponse;
-        }
+        self.network.notify(msg);
         return NetworkClientResponses::NoResponse;
         /*match &msg {
             NetworkClientMessages::Block(_block, _peer_id, _was_requested) => {
@@ -190,32 +227,12 @@ impl Handler<GetNetworkInfo> for ClientActor {
 
     #[perf]
     fn handle(&mut self, _msg: GetNetworkInfo, _ctx: &mut Context<Self>) -> Self::Result {
-        Ok(NetworkInfoResponse {
-            connected_peers: (self.network_info.connected_peers.iter())
-                .map(|fpi| fpi.peer_info.clone())
-                .collect(),
-            num_connected_peers: self.network_info.num_connected_peers,
-            peer_max_count: self.network_info.peer_max_count,
-            sent_bytes_per_sec: self.network_info.sent_bytes_per_sec,
-            received_bytes_per_sec: self.network_info.received_bytes_per_sec,
-            known_producers: self.network_info.known_producers.clone(),
-        })
+        return Err("dupa123".into()); 
     }
 }
 
 impl ClientActor {
-    /*/// Starts syncing and then switches to either syncing or regular mode.
-    fn sync_loop(&mut self, ctx: &mut Context<ClientActor>) {
-        let wait_period = match self.sync() {
-            Ok(wait_period) => wait_period,
-            Err(err) => {
-                error!(target: "sync", "Sync: Unexpected error: {}", err);
-                self.client.config.sync_step_period
-            }
-        };
-        near_performance_metrics::actix::run_later(ctx, wait_period, |act, ctx| act.sync_loop(ctx));
-    }
-
+    /*
     /// Main syncing job responsible for syncing client with other peers.
     /// Runs itself iff it was not ran as reaction for message with results of
     /// finishing state part job
