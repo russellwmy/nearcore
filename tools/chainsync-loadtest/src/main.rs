@@ -46,42 +46,18 @@ impl ChainSync {
         let peer = &peers.highest_height_peers[0];
         let target_height = peer.chain_info.height;
         info!("SYNC target_height = {}",target_height);
-        let msg = network.call(NetworkRequests::BlockHeadersRequest{
-            hashes: vec![next_block_hash],
-            peer_id: peer.peer_info.id.clone(),
-        }).await?;
-        let mut headers = if let NetworkClientMessages::BlockHeaders(headers,_) = msg { headers } else { panic!("unexpected message"); };
+        let mut headers = network.fetch_block_headers(peer.peer_info.id.clone(),next_block_hash).await?;
         headers.sort_by_key(|h|h.height());
-        if headers.len()==0 { return Err(anyhow!("invalid response: no headers")); }
         let start_height = headers[0].height();
         info!("SYNC start_height = {}, {} blocks to process",start_height,target_height-start_height);
         next_block_hash = headers.last().context("no headers")?.hash().clone();
         for h in &headers[0..5] {
             info!("SYNC requesting block #{}",h.height());
-            let msg = network.call(NetworkRequests::BlockRequest{
-                hash: h.hash().clone(),
-                peer_id: peer.peer_info.id.clone(),
-            }).await?;
-            let block = if let NetworkClientMessages::Block(block,_,_) = msg { block } else { panic!("unexpected message"); };
+            let block = network.fetch_block(peer.peer_info.id.clone(),h.hash().clone()).await?;
             info!("SYNC got block #{}, it has {} chunks",block.header().height(),block.chunks().len());
             for chunk_header in block.chunks().iter() {
                 info!("SYNC requesting chunk {} of block #{} ({})",chunk_header.shard_id(),block.header().height(),chunk_header.chunk_hash().0);
-                let msg = network.call(NetworkRequests::PartialEncodedChunkRequest{
-                    target: AccountIdOrPeerTrackingShard {
-                        account_id: None,
-                        prefer_peer: true, 
-                        shard_id: chunk_header.shard_id(),
-                        only_archival: false,
-                        min_height: block.header().height(),
-                    },
-                    request: PartialEncodedChunkRequestMsg {
-                        chunk_hash: chunk_header.chunk_hash().clone(),
-                        part_ords: (0..self.parts_per_chunk).collect(),
-                        tracking_shards: Default::default(),
-                    },
-                }).await?;
-                let chunk = if let NetworkClientMessages::PartialEncodedChunkResponse(resp) = msg { resp }
-                    else { panic!("unexpected message"); };
+                let chunk = network.fetch_chunk(chunk_header,(0..self.parts_per_chunk).collect()).await?;
                 info!("SYNC got chunk {}, it has {} parts",chunk.chunk_hash.0,chunk.parts.len());
             }
         }
@@ -118,8 +94,8 @@ fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<()>
 struct Cmd {
     #[clap(long)]
     pub chain_id : String,
-    #[clap(long)]
-    pub start_block_height : usize,
+    //#[clap(long)]
+    //pub start_block_height : usize,
     #[clap(long)]
     pub start_block_hash : String,
 }

@@ -6,6 +6,14 @@
 use std::time;
 use std::sync::Mutex;
 
+use near_primitives::sharding::{ChunkHash, ShardChunkHeader};
+use near_network_primitives::types::{
+    AccountIdOrPeerTrackingShard,
+    PartialEncodedChunkRequestMsg,
+    PartialEncodedChunkResponseMsg,
+};
+
+use near_primitives::block::{Block, BlockHeader};
 use near_network::types::PeerManagerMessageRequest;
 use near_primitives::hash::CryptoHash;
 use crate::near_client::client::Client;
@@ -42,43 +50,6 @@ use std::sync::Arc;
 use std::time::{Duration};
 use futures::channel::oneshot;
 
-#[derive(Hash,Eq,PartialEq)]
-pub enum Request {
-    BlockHeaders(PeerId,CryptoHash),
-    Block(PeerId,CryptoHash),
-    NetworkInfo,
-    Other,
-}
-
-impl From<&NetworkRequests> for Request {
-    fn from(r:&NetworkRequests) -> Request {
-        match r {
-            NetworkRequests::BlockRequest{peer_id,hash} => Request::Block(peer_id.clone(),hash.clone()),
-            NetworkRequests::BlockHeadersRequest{peer_id,hashes} => {
-                if hashes.len()!=1 { error!("hashes.len() = {}, want {}",hashes.len(),1); }
-                Request::BlockHeaders(peer_id.clone(),hashes[0])
-            }
-            _ => Request::Other,
-        }
-    }
-}
-
-impl From<&NetworkClientMessages> for Request {
-    fn from(m:&NetworkClientMessages) -> Request {
-        match m {
-            NetworkClientMessages::NetworkInfo(_) => Request::NetworkInfo,
-            NetworkClientMessages::Block(block,peer_id,_) => Request::Block(peer_id.clone(),block.hash().clone()),
-            NetworkClientMessages::BlockHeaders(headers,peer_id) => {
-                match headers.iter().min_by_key(|h|h.height()) {
-                    None => Request::Other,
-                    Some(h) => Request::BlockHeaders(peer_id.clone(),h.prev_hash().clone()),
-                }
-            }
-            _ => Request::Other,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct Network {
     data : Arc<Mutex<NetworkData>>
@@ -86,8 +57,11 @@ pub struct Network {
 
 struct NetworkData {
     network_adapter: Arc<dyn PeerManagerAdapter>,
-    in_progress: std::collections::HashMap<Request,Vec<oneshot::Sender<NetworkClientMessages>>>, 
-    info_consumers: Vec<(oneshot::Sender<Arc<NetworkInfo>>,usize)>, 
+    info_futures: Vec<(oneshot::Sender<Arc<NetworkInfo>>,usize)>,
+    
+    block_headers_futures: std::collections::HashMap<(PeerId,CryptoHash),Vec<oneshot::Sender<Vec<BlockHeader>>>>,
+    block_futures: std::collections::HashMap<(PeerId,CryptoHash),Vec<oneshot::Sender<Block>>>,
+    chunk_futures: std::collections::HashMap<ChunkHash,Vec<oneshot::Sender<PartialEncodedChunkResponseMsg>>>,
     info_ : Arc<NetworkInfo>,
 }
 
@@ -105,17 +79,13 @@ impl Network {
                 known_producers: vec![],
                 peer_counter: 0,        
             }),
-            info_consumers: Default::default(),
-            in_progress: Default::default(),
+            info_futures: Default::default(),
+            block_futures: Default::default(),
+            block_headers_futures: Default::default(),
+            chunk_futures: Default::default(),
         }))}
     }
-    pub fn call(&self, req: NetworkRequests) -> oneshot::Receiver<NetworkClientMessages> {
-        let mut n = self.data.lock().unwrap();
-        let (send,recv) = oneshot::channel();
-        n.in_progress.entry(From::from(&req)).or_default().push(send);
-        n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(req));
-        return recv;
-    }
+    
 
     pub fn info(&self, min_peers:usize) -> oneshot::Receiver<Arc<NetworkInfo>> {
         let (send,recv) = oneshot::channel();
@@ -123,27 +93,83 @@ impl Network {
         if n.info_.num_connected_peers>=min_peers {
             let _ = send.send(n.info_.clone());
         } else {
-            n.info_consumers.push((send,min_peers));
+            n.info_futures.push((send,min_peers));
         }
+        return recv;
+    }
+
+    pub fn fetch_block_headers(&self, peer_id:PeerId, hash:CryptoHash) -> oneshot::Receiver<Vec<BlockHeader>> {
+        let mut n = self.data.lock().unwrap();
+        let (send,recv) = oneshot::channel();
+        n.block_headers_futures.entry((peer_id.clone(),hash.clone())).or_default().push(send);
+        n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
+            NetworkRequests::BlockHeadersRequest{hashes:vec![hash],peer_id},
+        ));
+        return recv;
+    }
+
+    pub fn fetch_block(&self, peer_id:PeerId, hash:CryptoHash) -> oneshot::Receiver<Block> {
+        let mut n = self.data.lock().unwrap();
+        let (send,recv) = oneshot::channel();
+        n.block_futures.entry((peer_id.clone(),hash.clone())).or_default().push(send);
+        n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
+            NetworkRequests::BlockRequest{hash,peer_id},
+        ));
+        return recv;
+    }
+
+    pub fn fetch_chunk(&self, ch:&ShardChunkHeader, parts:Vec<u64>) -> oneshot::Receiver<PartialEncodedChunkResponseMsg> {
+        let mut n = self.data.lock().unwrap();
+        let (send,recv) = oneshot::channel();
+        n.chunk_futures.entry(ch.chunk_hash().clone()).or_default().push(send);
+        n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
+            NetworkRequests::PartialEncodedChunkRequest{
+                target: AccountIdOrPeerTrackingShard {
+                    account_id: None,
+                    prefer_peer: true, 
+                    shard_id: ch.shard_id(),
+                    only_archival: false,
+                    min_height: ch.height_included(),
+                },
+                request: PartialEncodedChunkRequestMsg {
+                    chunk_hash: ch.chunk_hash().clone(),
+                    part_ords: parts, 
+                    tracking_shards: Default::default(),
+                },
+            },
+        ));
         return recv;
     }
 
     fn notify(&self, msg : NetworkClientMessages) {
         let mut n = self.data.lock().unwrap();
-        if let NetworkClientMessages::NetworkInfo(info) = msg {
-            n.info_ = Arc::new(info);
-            let it = n.info_consumers.split_off(0);
-            for (s,min) in it {
-                if n.info_.num_connected_peers>=min {
-                    let _ = s.send(n.info_.clone());
-                } else {
-                    info!("connected = {}/{}",n.info_.num_connected_peers,min);
-                    n.info_consumers.push((s,min));
+        match msg {
+            NetworkClientMessages::NetworkInfo(info) => {
+                n.info_ = Arc::new(info);
+                let it = n.info_futures.split_off(0);
+                for (s,min) in it {
+                    if n.info_.num_connected_peers>=min {
+                        let _ = s.send(n.info_.clone());
+                    } else {
+                        info!("connected = {}/{}",n.info_.num_connected_peers,min);
+                        n.info_futures.push((s,min));
+                    }
                 }
             }
-            return;
+            NetworkClientMessages::Block(block,peer_id,_) => {
+                n.block_futures.entry((peer_id,block.hash().clone())).or_default().pop().map(|s|s.send(block));
+            }
+            NetworkClientMessages::BlockHeaders(headers,peer_id) => {
+                if let Some(h) = headers.iter().min_by_key(|h|h.height()) {
+                    let hash = h.prev_hash().clone();
+                    n.block_headers_futures.entry((peer_id,hash)).or_default().pop().map(|s|s.send(headers));
+                }
+            }
+            NetworkClientMessages::PartialEncodedChunkResponse(resp) => {
+                n.chunk_futures.entry(resp.chunk_hash.clone()).or_default().pop().map(|s|s.send(resp));
+            }
+            _ => {},
         }
-        n.in_progress.entry(From::from(&msg)).or_default().pop().map(|s|s.send(msg));
     }
 }
 
