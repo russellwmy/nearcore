@@ -254,9 +254,13 @@ mod trie_cache_tests {
 
     #[test]
     fn test_shard_cache_size() {
+        let shard_cache_size = 5;
         let store = create_test_store();
-        let mut trie_cache =
-            TrieCachingStorage::new(store, TrieCache::new_with_cap(5), ShardUId::single_shard());
+        let mut trie_cache = TrieCachingStorage::new(
+            store,
+            TrieCache::new_with_cap(shard_cache_size),
+            ShardUId::single_shard(),
+        );
 
         (0..shard_cache_size as u8 + 1).for_each(|i| trie_cache.put(hash(&[i]), &[i]));
 

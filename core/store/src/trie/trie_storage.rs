@@ -186,7 +186,7 @@ pub struct TrieCachingStorage {
     pub(crate) shard_uid: ShardUId,
 
     cache_state: Cell<TrieCacheState>,
-    chunk_cache: Cell<HashMap<CryptoHash, Arc<[u8]>>>,
+    chunk_cache: RefCell<HashMap<CryptoHash, Arc<[u8]>>>,
     pub(crate) counter: Cell<u64>,
 }
 
@@ -197,7 +197,7 @@ impl TrieCachingStorage {
             cache,
             shard_uid,
             cache_state: Cell::new(TrieCacheState::CachingShard),
-            chunk_cache: Cell::new(Default::default()),
+            chunk_cache: RefCell::new(Default::default()),
             counter: Cell::new(0u64),
         }
     }
@@ -228,7 +228,7 @@ impl TrieCachingStorage {
     }
 
     pub(crate) fn get_cache_position(&self, key: &CryptoHash) -> CachePosition {
-        match self.chunk_cache.borrow().get().get(key) {
+        match self.chunk_cache.borrow_mut().get(key) {
             Some(value) => CachePosition::ChunkCache(value.clone()),
             None => match self.cache.get(key) {
                 Some(value) => CachePosition::ShardCache(value.clone()),
@@ -248,7 +248,7 @@ impl TrieCachingStorage {
                         .cache
                         .pop(key)
                         .expect("If position is ShardCache then value must be presented");
-                    self.chunk_cache.borrow().get_mut().insert(key.clone(), value);
+                    self.chunk_cache.borrow_mut().insert(key.clone(), value);
                 };
                 RawBytesWithCost { value: Some(value), cost: TrieNodeRetrievalCost::Full }
             }
@@ -267,7 +267,7 @@ impl TrieCachingStorage {
             return;
         }
         let value = Arc::new(*value);
-        let chunk_cache = self.chunk_cache.borrow().get_mut();
+        let mut chunk_cache = self.chunk_cache.borrow_mut();
 
         if let TrieCacheState::CachingChunk = &self.cache_state.borrow().get() {
             self.cache.pop(&key);
@@ -282,7 +282,7 @@ impl TrieCachingStorage {
     }
 
     pub fn pop(&mut self, hash: &CryptoHash) -> Option<Arc<[u8]>> {
-        match self.chunk_cache.borrow().get_mut().remove(hash) {
+        match self.chunk_cache.borrow_mut().remove(hash) {
             Some(value) => Some(value),
             None => self.cache.pop(hash),
         }
