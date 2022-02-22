@@ -23,6 +23,71 @@ use tracing::{info,error};
 use tracing_subscriber::EnvFilter;
 use near_primitives::hash::CryptoHash;
 use near_network::types::{NetworkClientMessages,NetworkRequests};
+use near_network_primitives::types::{
+    AccountIdOrPeerTrackingShard,
+    PartialEncodedChunkRequestMsg,
+};
+
+struct ChainSync {
+    // client_config.min_num_peers
+    min_num_peers : usize,
+    // Currently it is equivalent to genesis_config.num_block_producer_seats,
+    // (see https://cs.github.com/near/nearcore/blob/dae9553670de13c279d3ebd55f17da13d94fa691/nearcore/src/runtime/mod.rs#L1114).
+    // AFAICT eventually it will change dynamically (I guess it will be provided in the Block).
+    parts_per_chunk : u64,
+}
+
+impl ChainSync {
+    async fn run(self, pool: futures::executor::ThreadPool, network: near_client::Network,  start_block_hash: CryptoHash) -> anyhow::Result<()> {
+        info!("SYNC waiting for peers");
+        let peers = network.info(self.min_num_peers).await?;
+        info!("SYNC start");
+        let mut next_block_hash = start_block_hash;
+        let peer = &peers.highest_height_peers[0];
+        let target_height = peer.chain_info.height;
+        info!("SYNC target_height = {}",target_height);
+        let msg = network.call(NetworkRequests::BlockHeadersRequest{
+            hashes: vec![next_block_hash],
+            peer_id: peer.peer_info.id.clone(),
+        }).await?;
+        let mut headers = if let NetworkClientMessages::BlockHeaders(headers,_) = msg { headers } else { panic!("unexpected message"); };
+        headers.sort_by_key(|h|h.height());
+        if headers.len()==0 { return Err(anyhow!("invalid response: no headers")); }
+        let start_height = headers[0].height();
+        info!("SYNC start_height = {}, {} blocks to process",start_height,target_height-start_height);
+        next_block_hash = headers.last().context("no headers")?.hash().clone();
+        for h in &headers[0..5] {
+            info!("SYNC requesting block #{}",h.height());
+            let msg = network.call(NetworkRequests::BlockRequest{
+                hash: h.hash().clone(),
+                peer_id: peer.peer_info.id.clone(),
+            }).await?;
+            let block = if let NetworkClientMessages::Block(block,_,_) = msg { block } else { panic!("unexpected message"); };
+            info!("SYNC got block #{}, it has {} chunks",block.header().height(),block.chunks().len());
+            for chunk_header in block.chunks().iter() {
+                info!("SYNC requesting chunk {} of block #{} ({})",chunk_header.shard_id(),block.header().height(),chunk_header.chunk_hash().0);
+                let msg = network.call(NetworkRequests::PartialEncodedChunkRequest{
+                    target: AccountIdOrPeerTrackingShard {
+                        account_id: None,
+                        prefer_peer: true, 
+                        shard_id: chunk_header.shard_id(),
+                        only_archival: false,
+                        min_height: block.header().height(),
+                    },
+                    request: PartialEncodedChunkRequestMsg {
+                        chunk_hash: chunk_header.chunk_hash().clone(),
+                        part_ords: (0..self.parts_per_chunk).collect(),
+                        tracking_shards: Default::default(),
+                    },
+                }).await?;
+                let chunk = if let NetworkClientMessages::PartialEncodedChunkResponse(resp) = msg { resp }
+                    else { panic!("unexpected message"); };
+                info!("SYNC got chunk {}, it has {} parts",chunk.chunk_hash.0,chunk.parts.len());
+            }
+        }
+        return anyhow::Ok(());
+    }
+}
 
 fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<()> {
     // Always fetch the config.
@@ -59,27 +124,6 @@ struct Cmd {
     pub start_block_hash : String,
 }
 
-async fn sync(pool: futures::executor::ThreadPool, config : ClientConfig, network: near_client::Network,  start_block_hash: CryptoHash) -> anyhow::Result<()> {
-    info!("SYNC waiting for peers");
-    let peers = network.info(config.min_num_peers).await?;
-    info!("SYNC start");
-    let mut next_block_hash = start_block_hash;
-    let peer = &peers.highest_height_peers[0];
-    let target_height = peer.chain_info.height;
-    info!("SYNC target_height = {}",target_height);
-    let msg = network.call(NetworkRequests::BlockHeadersRequest{
-        hashes: vec![next_block_hash],
-        peer_id: peer.peer_info.id.clone(),
-    }).await?;
-    let mut headers = if let NetworkClientMessages::BlockHeaders(headers,_) = msg { headers } else { panic!("unexpected message"); };
-    headers.sort_by_key(|h|h.height());
-    if headers.len()==0 { return Err(anyhow!("invalid response: no headers")); }
-    let start_height = headers[0].height();
-    info!("SYNC start_height = {}, {} blocks to process",target_height,target_height-start_height);
-    next_block_hash = headers.last().context("no headers")?.hash().clone();
-    return anyhow::Ok(());
-}
-
 impl Cmd {
     fn parse_and_run() -> anyhow::Result<()> {
         let cmd = Self::parse();
@@ -105,7 +149,10 @@ impl Cmd {
         };
         info!("#boot nodes = {}",near_config.network_config.boot_nodes.len());
         return actix::System::new().block_on(async move {
-            let config = near_config.client_config.clone(); 
+            let chain_sync = ChainSync{
+                min_num_peers: near_config.client_config.min_num_peers,
+                parts_per_chunk: near_config.genesis.config.num_block_producer_seats,
+            };
             let network = start::start_with_config(
                 home_dir,
                 near_config,
@@ -113,7 +160,7 @@ impl Cmd {
             ).context("start_with_config")?;
 
             let pool = futures::executor::ThreadPool::new()?;
-            let handle = pool.spawn_with_handle(sync(pool.clone(),config,network,start_block_hash));
+            let handle = pool.spawn_with_handle(chain_sync.run(pool.clone(),network,start_block_hash));
 
             let sig = if cfg!(unix) {
                 use tokio::signal::unix::{signal, SignalKind};
