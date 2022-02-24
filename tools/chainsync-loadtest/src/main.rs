@@ -42,24 +42,24 @@ struct ChainSync {
 impl ChainSync {
     async fn run(self, ctx:Ctx, network: near_client::Network,  start_block_hash: CryptoHash) -> anyhow::Result<()> {
         info!("SYNC waiting for peers");
-        let peers = network.info(ctx,self.min_num_peers).await?;
+        let peers = network.info(ctx.clone(),self.min_num_peers).await?;
         info!("SYNC start");
         let mut next_block_hash = start_block_hash;
         let peer = &peers.highest_height_peers[0];
         let target_height = peer.chain_info.height;
         info!("SYNC target_height = {}",target_height);
-        let mut headers = network.fetch_block_headers(peer.peer_info.id.clone(),next_block_hash).await?;
+        let mut headers = network.fetch_block_headers(ctx.clone(),peer.peer_info.id.clone(),next_block_hash).await?;
         headers.sort_by_key(|h|h.height());
         let start_height = headers[0].height();
         info!("SYNC start_height = {}, {} blocks to process",start_height,target_height-start_height);
         next_block_hash = headers.last().context("no headers")?.hash().clone();
         for h in &headers[0..5] {
             info!("SYNC requesting block #{}",h.height());
-            let block = network.fetch_block(peer.peer_info.id.clone(),h.hash().clone()).await?;
+            let block = network.fetch_block(ctx.clone(),peer.peer_info.id.clone(),h.hash().clone()).await?;
             info!("SYNC got block #{}, it has {} chunks",block.header().height(),block.chunks().len());
             for chunk_header in block.chunks().iter() {
                 info!("SYNC requesting chunk {} of block #{} ({})",chunk_header.shard_id(),block.header().height(),chunk_header.chunk_hash().0);
-                let chunk = network.fetch_chunk(chunk_header,(0..self.parts_per_chunk).collect()).await?;
+                let chunk = network.fetch_chunk(ctx.clone(),chunk_header,(0..self.parts_per_chunk).collect()).await?;
                 info!("SYNC got chunk {}, it has {} parts",chunk.chunk_hash.0,chunk.parts.len());
             }
         }
@@ -146,7 +146,8 @@ impl Cmd {
 
             // We execute the chain_sync on a totally separate set of system threads to minimize
             // the interaction with actix.
-            let handle = rt.spawn(chain_sync.run(Ctx::background(),network,start_block_hash));
+            let (ctx,cancel) = Ctx::background().with_cancel();
+            let handle = rt.spawn(chain_sync.run(ctx,network,start_block_hash));
 
             let sig = if cfg!(unix) {
                 use tokio::signal::unix::{signal, SignalKind};
@@ -161,8 +162,8 @@ impl Cmd {
                 "Ctrl+C"
             };
             info!(target: "neard", "Got {}, stopping...", sig);
-            // TODO: inform the handled funtion that we are stopping + handle.join();
-            //handle.await??;
+            cancel();
+            handle.await??;
             return Ok(()); 
         });
     }

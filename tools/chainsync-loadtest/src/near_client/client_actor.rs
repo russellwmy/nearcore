@@ -86,61 +86,66 @@ impl Network {
     }
     
 
-    pub fn info(&self, ctx: Ctx, min_peers:usize) -> impl std::future::Future<Output=anyhow::Result<Arc<NetworkInfo>>> {
+    pub async fn info(&self, ctx:Ctx, min_peers:usize) -> anyhow::Result<Arc<NetworkInfo>> {
         let (send,recv) = oneshot::channel();
-        let mut n = self.data.lock().unwrap();
-        if n.info_.num_connected_peers>=min_peers {
-            let _ = send.send(n.info_.clone());
-        } else {
-            n.info_futures.push((send,min_peers));
+        {
+            let mut n = self.data.lock().unwrap();
+            if n.info_.num_connected_peers>=min_peers {
+                let _ = send.send(n.info_.clone());
+            } else {
+                n.info_futures.push((send,min_peers));
+            }
         }
-        return async move {
-            let x = ctx.wrap(recv).await??;
-            anyhow::Ok(x)
-        };
+        anyhow::Ok(ctx.wrap(recv).await??)
     }
 
-    pub fn fetch_block_headers(&self, peer_id:PeerId, hash:CryptoHash) -> oneshot::Receiver<Vec<BlockHeader>> {
-        let mut n = self.data.lock().unwrap();
+    pub async fn fetch_block_headers(&self, ctx:Ctx, peer_id:PeerId, hash:CryptoHash) -> anyhow::Result<Vec<BlockHeader>> {
         let (send,recv) = oneshot::channel();
-        n.block_headers_futures.entry((peer_id.clone(),hash.clone())).or_default().push(send);
-        n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
-            NetworkRequests::BlockHeadersRequest{hashes:vec![hash],peer_id},
-        ));
-        return recv;
+        {
+            let mut n = self.data.lock().unwrap();
+            n.block_headers_futures.entry((peer_id.clone(),hash.clone())).or_default().push(send);
+            n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
+                NetworkRequests::BlockHeadersRequest{hashes:vec![hash],peer_id},
+            ));
+        }
+        anyhow::Ok(ctx.wrap(recv).await??)
     }
 
-    pub fn fetch_block(&self, peer_id:PeerId, hash:CryptoHash) -> oneshot::Receiver<Block> {
-        let mut n = self.data.lock().unwrap();
+    pub async fn fetch_block(&self, ctx:Ctx, peer_id:PeerId, hash:CryptoHash) -> anyhow::Result<Block> {
         let (send,recv) = oneshot::channel();
-        n.block_futures.entry((peer_id.clone(),hash.clone())).or_default().push(send);
-        n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
-            NetworkRequests::BlockRequest{hash,peer_id},
-        ));
-        return recv;
+        {
+            let mut n = self.data.lock().unwrap();
+            n.block_futures.entry((peer_id.clone(),hash.clone())).or_default().push(send);
+            n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
+                NetworkRequests::BlockRequest{hash,peer_id},
+            ));
+        }
+        anyhow::Ok(ctx.wrap(recv).await??)
     }
 
-    pub fn fetch_chunk(&self, ch:&ShardChunkHeader, parts:Vec<u64>) -> oneshot::Receiver<PartialEncodedChunkResponseMsg> {
-        let mut n = self.data.lock().unwrap();
+    pub async fn fetch_chunk(&self, ctx:Ctx, ch:&ShardChunkHeader, parts:Vec<u64>) -> anyhow::Result<PartialEncodedChunkResponseMsg> {
         let (send,recv) = oneshot::channel();
-        n.chunk_futures.entry(ch.chunk_hash().clone()).or_default().push(send);
-        n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
-            NetworkRequests::PartialEncodedChunkRequest{
-                target: AccountIdOrPeerTrackingShard {
-                    account_id: None,
-                    prefer_peer: true, 
-                    shard_id: ch.shard_id(),
-                    only_archival: false,
-                    min_height: ch.height_included(),
+        {
+            let mut n = self.data.lock().unwrap();
+            n.chunk_futures.entry(ch.chunk_hash().clone()).or_default().push(send);
+            n.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
+                NetworkRequests::PartialEncodedChunkRequest{
+                    target: AccountIdOrPeerTrackingShard {
+                        account_id: None,
+                        prefer_peer: true, 
+                        shard_id: ch.shard_id(),
+                        only_archival: false,
+                        min_height: ch.height_included(),
+                    },
+                    request: PartialEncodedChunkRequestMsg {
+                        chunk_hash: ch.chunk_hash().clone(),
+                        part_ords: parts, 
+                        tracking_shards: Default::default(),
+                    },
                 },
-                request: PartialEncodedChunkRequestMsg {
-                    chunk_hash: ch.chunk_hash().clone(),
-                    part_ords: parts, 
-                    tracking_shards: Default::default(),
-                },
-            },
-        ));
-        return recv;
+            ));
+        }
+        anyhow::Ok(ctx.wrap(recv).await??)
     }
 
     fn notify(&self, msg : NetworkClientMessages) {
