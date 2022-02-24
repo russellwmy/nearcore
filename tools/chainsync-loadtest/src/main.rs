@@ -4,6 +4,7 @@
 
 mod start;
 mod near_client;
+mod async_ctx;
 
 use std::sync::{Arc,Mutex};
 use std::str::FromStr;
@@ -27,6 +28,7 @@ use near_network_primitives::types::{
     AccountIdOrPeerTrackingShard,
     PartialEncodedChunkRequestMsg,
 };
+use async_ctx::Ctx;
 
 struct ChainSync {
     // client_config.min_num_peers
@@ -38,9 +40,9 @@ struct ChainSync {
 }
 
 impl ChainSync {
-    async fn run(self, network: near_client::Network,  start_block_hash: CryptoHash) -> anyhow::Result<()> {
+    async fn run(self, ctx:Ctx, network: near_client::Network,  start_block_hash: CryptoHash) -> anyhow::Result<()> {
         info!("SYNC waiting for peers");
-        let peers = network.info(self.min_num_peers).await?;
+        let peers = network.info(ctx,self.min_num_peers).await?;
         info!("SYNC start");
         let mut next_block_hash = start_block_hash;
         let peer = &peers.highest_height_peers[0];
@@ -144,7 +146,7 @@ impl Cmd {
 
             // We execute the chain_sync on a totally separate set of system threads to minimize
             // the interaction with actix.
-            let handle = rt.spawn(chain_sync.run(network,start_block_hash));
+            let handle = rt.spawn(chain_sync.run(Ctx::background(),network,start_block_hash));
 
             let sig = if cfg!(unix) {
                 use tokio::signal::unix::{signal, SignalKind};

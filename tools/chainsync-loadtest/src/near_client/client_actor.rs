@@ -47,88 +47,7 @@ use std::sync::{Arc,Weak,Mutex,RwLock};
 use tokio::sync::oneshot;
 use tokio::sync;
 use tokio::time;
-
-struct Ctx_ {
-    notify : sync::Notify,
-    deadline : Option<time::Instant>,
-    done : bool, // TODO: Option<ErrContext>
-                 //
-    parent : Option<Arc<RwLock<Ctx_>>>,
-    children : Vec<Weak<RwLock<Ctx_>>>,
-}
-
-#[derive(Clone)]
-pub struct Ctx(Arc<RwLock<Ctx_>>);
-
-impl Drop for Ctx_ {
-    fn drop(&mut self) {
-        self.parent.take().map(
-            |p|p.write().unwrap().children.retain(|c|c.upgrade().is_some())
-        );
-    }
-}
-
-
-impl Ctx {
-    pub fn background() -> Ctx {
-        return Ctx(Arc::new(RwLock::new(Ctx_{
-            parent: None,
-            children: vec![],
-            deadline: None,
-            notify: sync::Notify::new(),
-            done: false,
-        })));
-    }
-
-    fn cancel(&self) {
-        let mut p = self.0.write().unwrap();
-        p.done = true;
-        p.notify.notify_waiters();
-        let _ = p.children.drain(0..).map(|c|c.upgrade().map(|c|Ctx(c).cancel()));
-    }
-
-    pub fn done(&self) -> impl std::future::Future<Output=()> + '_ {
-        let ctx = self.0.read().unwrap();
-        let done = ctx.done;
-        return async move {
-            if done { return (); }
-            match ctx.deadline {
-                Some(d) => {
-                    let _ = time::timeout_at(d,ctx.notify.notified()).await;
-                    ()
-                }
-                None => ctx.notify.notified().await,
-            }
-        }
-    }
-
-    pub fn with_cancel(&self) -> (Ctx,impl Fn()->()) {
-        let mut p = self.0.write().unwrap();
-        let ctx = Ctx(Arc::new(RwLock::new(Ctx_{
-            parent: Some(self.0.clone()),
-            children: vec![],
-            deadline: p.deadline,
-            notify: sync::Notify::new(),
-            done: p.done,
-        })));
-        p.children.push(Arc::downgrade(&ctx.0));
-        let ctx1 = ctx.clone();
-        return (ctx,move ||ctx1.cancel());
-    }
-
-    pub fn with_deadline(&self, deadline: tokio::time::Instant) -> Ctx {
-        let mut p = self.0.write().unwrap();
-        let ctx = Ctx(Arc::new(RwLock::new(Ctx_{
-            parent: Some(self.0.clone()),
-            children: vec![],
-            deadline: Some(std::cmp::min(deadline,p.deadline.unwrap_or(deadline))),
-            notify: sync::Notify::new(),
-            done: p.done,
-        })));
-        p.children.push(Arc::downgrade(&ctx.0));
-        return ctx;
-    }
-}
+use crate::async_ctx::Ctx;
 
 #[derive(Clone)]
 pub struct Network {
@@ -167,7 +86,7 @@ impl Network {
     }
     
 
-    pub fn info(&self, min_peers:usize) -> oneshot::Receiver<Arc<NetworkInfo>> {
+    pub fn info(&self, ctx: Ctx, min_peers:usize) -> impl std::future::Future<Output=anyhow::Result<Arc<NetworkInfo>>> {
         let (send,recv) = oneshot::channel();
         let mut n = self.data.lock().unwrap();
         if n.info_.num_connected_peers>=min_peers {
@@ -175,7 +94,10 @@ impl Network {
         } else {
             n.info_futures.push((send,min_peers));
         }
-        return recv;
+        return async move {
+            let x = ctx.wrap(recv).await??;
+            anyhow::Ok(x)
+        };
     }
 
     pub fn fetch_block_headers(&self, peer_id:PeerId, hash:CryptoHash) -> oneshot::Receiver<Vec<BlockHeader>> {
@@ -294,30 +216,6 @@ impl Handler<NetworkClientMessages> for ClientActor {
     fn handle(&mut self, msg: NetworkClientMessages, _ctx: &mut Context<Self>) -> Self::Result {
         self.network.notify(msg);
         return NetworkClientResponses::NoResponse;
-        /*match &msg {
-            NetworkClientMessages::Block(_block, _peer_id, _was_requested) => {
-            }
-            NetworkClientMessages::BlockHeaders(headers, peer_id) => {
-                let mut heights : Vec<_> = headers.iter().map(|a|a.height()).collect();
-                heights.sort();
-                let l = heights[0];
-                let h = heights.last().unwrap();
-                info!("SYNC {} headers ({} - {}) received from {}",heights.len(),l,h,peer_id);
-            }
-            NetworkClientMessages::Transaction{..} => {}
-            NetworkClientMessages::BlockApproval(_approval, _peer_id) => {}
-            NetworkClientMessages::StateResponse(_state_response_info) => {}
-            NetworkClientMessages::EpochSyncResponse(_peer_id, _response) => {}
-            NetworkClientMessages::EpochSyncFinalizationResponse(_peer_id, _response) => {}
-            NetworkClientMessages::PartialEncodedChunkRequest(_part_request_msg, _route_back) => {}
-            NetworkClientMessages::PartialEncodedChunkResponse(_response) => {
-            }
-            NetworkClientMessages::PartialEncodedChunk(_partial_encoded_chunk) => {
-            }
-            NetworkClientMessages::PartialEncodedChunkForward(_forward) => {}
-            NetworkClientMessages::Challenge(_challenge) => {}
-            
-        }*/
     }
 }
 
