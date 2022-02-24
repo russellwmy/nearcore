@@ -3,9 +3,6 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use std::time;
-use std::sync::Mutex;
-
 use near_primitives::sharding::{ChunkHash, ShardChunkHeader};
 use near_network_primitives::types::{
     AccountIdOrPeerTrackingShard,
@@ -46,9 +43,92 @@ use near_primitives::version::PROTOCOL_VERSION;
 use near_primitives::views::ValidatorInfo;
 use rand::seq::SliceRandom;
 use rand::{thread_rng};
-use std::sync::Arc;
-use std::time::{Duration};
-use futures::channel::oneshot;
+use std::sync::{Arc,Weak,Mutex,RwLock};
+use tokio::sync::oneshot;
+use tokio::sync;
+use tokio::time;
+
+struct Ctx_ {
+    notify : sync::Notify,
+    deadline : Option<time::Instant>,
+    done : bool, // TODO: Option<ErrContext>
+                 //
+    parent : Option<Arc<RwLock<Ctx_>>>,
+    children : Vec<Weak<RwLock<Ctx_>>>,
+}
+
+#[derive(Clone)]
+pub struct Ctx(Arc<RwLock<Ctx_>>);
+
+impl Drop for Ctx_ {
+    fn drop(&mut self) {
+        self.parent.take().map(
+            |p|p.write().unwrap().children.retain(|c|c.upgrade().is_some())
+        );
+    }
+}
+
+
+impl Ctx {
+    pub fn background() -> Ctx {
+        return Ctx(Arc::new(RwLock::new(Ctx_{
+            parent: None,
+            children: vec![],
+            deadline: None,
+            notify: sync::Notify::new(),
+            done: false,
+        })));
+    }
+
+    fn cancel(&self) {
+        let mut p = self.0.write().unwrap();
+        p.done = true;
+        p.notify.notify_waiters();
+        let _ = p.children.drain(0..).map(|c|c.upgrade().map(|c|Ctx(c).cancel()));
+    }
+
+    pub fn done(&self) -> impl std::future::Future<Output=()> + '_ {
+        let ctx = self.0.read().unwrap();
+        let done = ctx.done;
+        return async move {
+            if done { return (); }
+            match ctx.deadline {
+                Some(d) => {
+                    let _ = time::timeout_at(d,ctx.notify.notified()).await;
+                    ()
+                }
+                None => ctx.notify.notified().await,
+            }
+        }
+    }
+
+    pub fn with_cancel(&self) -> (Ctx,impl Fn()->()) {
+        let mut p = self.0.write().unwrap();
+        let ctx = Ctx(Arc::new(RwLock::new(Ctx_{
+            parent: Some(self.0.clone()),
+            children: vec![],
+            deadline: p.deadline,
+            notify: sync::Notify::new(),
+            done: p.done,
+        })));
+        p.children.push(Arc::downgrade(&ctx.0));
+        let ctx1 = ctx.clone();
+        return (ctx,move ||ctx1.cancel());
+    }
+
+    pub fn with_deadline(&self, deadline: tokio::time::Instant) -> Ctx {
+        let mut p = self.0.write().unwrap();
+        let ctx = Ctx(Arc::new(RwLock::new(Ctx_{
+            parent: Some(self.0.clone()),
+            children: vec![],
+            deadline: Some(std::cmp::min(deadline,p.deadline.unwrap_or(deadline))),
+            notify: sync::Notify::new(),
+            done: p.done,
+        })));
+        p.children.push(Arc::downgrade(&ctx.0));
+        return ctx;
+    }
+}
 
 #[derive(Clone)]
 pub struct Network {

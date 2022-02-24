@@ -38,7 +38,7 @@ struct ChainSync {
 }
 
 impl ChainSync {
-    async fn run(self, pool: futures::executor::ThreadPool, network: near_client::Network,  start_block_hash: CryptoHash) -> anyhow::Result<()> {
+    async fn run(self, network: near_client::Network,  start_block_hash: CryptoHash) -> anyhow::Result<()> {
         info!("SYNC waiting for peers");
         let peers = network.info(self.min_num_peers).await?;
         info!("SYNC start");
@@ -124,6 +124,13 @@ impl Cmd {
             build: "unknown".to_string(),
         };
         info!("#boot nodes = {}",near_config.network_config.boot_nodes.len());
+        // Dropping Runtime is blocking, while futures should never be blocking.
+        // Tokio has a runtime check which panics if you drop tokio Runtime from a future executed
+        // on another Tokio runtime.
+        // To avoid that, we create a runtime within the synchronous code and pass just an Arc
+        // inside of it.
+        let rt_ = Arc::new(tokio::runtime::Runtime::new()?);
+        let rt = rt_.clone();
         return actix::System::new().block_on(async move {
             let chain_sync = ChainSync{
                 min_num_peers: near_config.client_config.min_num_peers,
@@ -135,8 +142,9 @@ impl Cmd {
                 start_block_hash,
             ).context("start_with_config")?;
 
-            let pool = futures::executor::ThreadPool::new()?;
-            let handle = pool.spawn_with_handle(chain_sync.run(pool.clone(),network,start_block_hash));
+            // We execute the chain_sync on a totally separate set of system threads to minimize
+            // the interaction with actix.
+            let handle = rt.spawn(chain_sync.run(network,start_block_hash));
 
             let sig = if cfg!(unix) {
                 use tokio::signal::unix::{signal, SignalKind};
@@ -152,6 +160,7 @@ impl Cmd {
             };
             info!(target: "neard", "Got {}, stopping...", sig);
             // TODO: inform the handled funtion that we are stopping + handle.join();
+            //handle.await??;
             return Ok(()); 
         });
     }
