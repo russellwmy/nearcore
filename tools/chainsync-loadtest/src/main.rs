@@ -5,7 +5,11 @@
 mod start;
 mod near_client;
 mod async_ctx;
+mod dispatcher;
 
+use futures::future::FutureExt;
+use futures::task::SpawnExt;
+use core::future::Future;
 use tokio::time;
 use std::sync::{Arc,Mutex};
 use std::str::FromStr;
@@ -14,8 +18,6 @@ use anyhow::{anyhow,Context};
 use near_primitives::version;
 use openssl_probe;
 use clap::{AppSettings, Clap};
-use futures::future::FutureExt;
-use futures::task::SpawnExt;
 use near_chain_configs::{ClientConfig,GenesisValidationMode};
 use nearcore::config;
 use std::path::Path;
@@ -24,6 +26,7 @@ use tracing::metadata::LevelFilter;
 use tracing::{info,error};
 use tracing_subscriber::EnvFilter;
 use near_primitives::hash::CryptoHash;
+use near_primitives::network::{PeerId};
 use near_network::types::{NetworkClientMessages,NetworkRequests};
 use near_network_primitives::types::{
     AccountIdOrPeerTrackingShard,
@@ -32,6 +35,7 @@ use near_network_primitives::types::{
 use async_ctx::{Ctx,AnyhowCast};
 
 struct ChainSync {
+    network: Arc<near_client::Network>,
     // client_config.min_num_peers
     min_num_peers : usize,
     // Currently it is equivalent to genesis_config.num_block_producer_seats,
@@ -42,39 +46,45 @@ struct ChainSync {
     request_timeout : tokio::time::Duration,
 }
 
+
 impl ChainSync {
-    async fn run(self, ctx:Ctx, network: near_client::Network,  start_block_hash: CryptoHash) -> anyhow::Result<()> {
-        info!("SYNC waiting for peers");
-        let peers = network.info(ctx.clone(),self.min_num_peers).await?;
+    async fn retry<'a,F,T>(&'a self,ctx:Ctx,make_future:impl Fn(Ctx,PeerId) -> F) -> anyhow::Result<T> where
+        F : Future<Output=anyhow::Result<T>> + 'a
+    {
+        loop {
+            for peer in &self.network.info(ctx.clone(),self.min_num_peers).await?.connected_peers {
+                let res = make_future(ctx.with_timeout(self.request_timeout),peer.peer_info.id.clone()).await;
+                if !res.matches(&async_ctx::Err::DeadlineExceeded) {
+                    return res;
+                }
+                info!("SYNC deadline exceeded, retrying");
+            }
+        }
+    }
+    
+    async fn run(self:Arc<ChainSync>, ctx:Ctx, start_block_hash: CryptoHash) -> anyhow::Result<()> {
         info!("SYNC start");
         let mut next_block_hash = start_block_hash;
+        let peers = self.network.clone().info(ctx.clone(),self.min_num_peers).await?;
         let peer = &peers.highest_height_peers[0];
         let target_height = peer.chain_info.height;
         info!("SYNC target_height = {}",target_height);
-        let mut headers = async {
-            loop {
-                if let Some(e) = ctx.err() { return Err(anyhow!(e)) }
-                let peers = network.info(ctx.clone(),self.min_num_peers).await?;
-                for peer in &peers.connected_peers {
-                    let res = network.fetch_block_headers(ctx.with_timeout(self.request_timeout),peer.peer_info.id.clone(),next_block_hash).await;
-                    if res.matches(&async_ctx::Err::DeadlineExceeded) {
-                        continue
-                    }
-                    return res; 
-                }
-            }
-        }.await?;
+        let mut headers = self.retry(ctx.clone(),|ctx,peer_id|
+            self.network.fetch_block_headers(ctx,peer_id,next_block_hash)
+        ).await?;
         headers.sort_by_key(|h|h.height());
         let start_height = headers[0].height();
         info!("SYNC start_height = {}, {} blocks to process",start_height,target_height-start_height);
         next_block_hash = headers.last().context("no headers")?.hash().clone();
         for h in &headers[0..5] {
             info!("SYNC requesting block #{}",h.height());
-            let block = network.fetch_block(ctx.clone(),peer.peer_info.id.clone(),h.hash().clone()).await?;
+            let block = self.retry(ctx.clone(),|ctx,peer_id|
+                self.network.fetch_block(ctx,peer_id,h.hash().clone())
+            ).await?;
             info!("SYNC got block #{}, it has {} chunks",block.header().height(),block.chunks().len());
             for chunk_header in block.chunks().iter() {
                 info!("SYNC requesting chunk {} of block #{} ({})",chunk_header.shard_id(),block.header().height(),chunk_header.chunk_hash().0);
-                let chunk = network.fetch_chunk(ctx.clone(),chunk_header,(0..self.parts_per_chunk).collect()).await?;
+                let chunk = self.network.clone().fetch_chunk(ctx.clone(),chunk_header,(0..self.parts_per_chunk).collect()).await?;
                 info!("SYNC got chunk {}, it has {} parts",chunk.chunk_hash.0,chunk.parts.len());
             }
         }
@@ -111,8 +121,6 @@ fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<()>
 struct Cmd {
     #[clap(long)]
     pub chain_id : String,
-    //#[clap(long)]
-    //pub start_block_height : usize,
     #[clap(long)]
     pub start_block_hash : String,
 }
@@ -149,21 +157,20 @@ impl Cmd {
         let rt_ = Arc::new(tokio::runtime::Runtime::new()?);
         let rt = rt_.clone();
         return actix::System::new().block_on(async move {
-            let chain_sync = ChainSync{
+            let chain_sync = Arc::new(ChainSync{
                 min_num_peers: near_config.client_config.min_num_peers,
                 parts_per_chunk: near_config.genesis.config.num_block_producer_seats,
-                request_timeout: time::Duration::from_secs(1),
-            };
-            let network = start::start_with_config(
-                home_dir,
-                near_config,
-                start_block_hash,
-            ).context("start_with_config")?;
-
+                network: start::start_with_config(
+                    home_dir,
+                    near_config,
+                    start_block_hash,
+                ).context("start_with_config")?,
+                request_timeout: time::Duration::from_secs(2),
+            });
             // We execute the chain_sync on a totally separate set of system threads to minimize
             // the interaction with actix.
             let (ctx,cancel) = Ctx::background().with_cancel();
-            let handle = rt.spawn(chain_sync.run(ctx,network,start_block_hash));
+            let handle = rt.spawn(chain_sync.run(ctx,start_block_hash));
 
             let sig = if cfg!(unix) {
                 use tokio::signal::unix::{signal, SignalKind};
