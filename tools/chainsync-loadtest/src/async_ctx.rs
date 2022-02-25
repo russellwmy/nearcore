@@ -173,9 +173,14 @@ impl Ctx {
 
     pub fn with_cancel(&self) -> (Ctx,impl Fn()->()) {
         let mut children = self.0.children.write().unwrap();
+        let done = if let Some(_) = self.0.done.get() {
+            Eventual(self.0.done.0.clone())
+        } else {
+            Eventual::new()
+        };
         let ctx = Ctx(Arc::new(Ctx_{
             parent: Some(self.0.clone()),
-            done: Eventual::new(),
+            done: done, 
             deadline: self.0.deadline,
             children: RwLock::new(vec![]),
         }));
@@ -188,11 +193,10 @@ impl Ctx {
         let mut children = self.0.children.write().unwrap();
         let ctx = Ctx(Arc::new(Ctx_{
             parent: Some(self.0.clone()),
-            done: Eventual::new(),
+            done: Eventual(self.0.done.0.clone()),
             deadline: Some(std::cmp::min(deadline,self.0.deadline.unwrap_or(deadline))),
             children: RwLock::new(vec![]),
         }));
-        // TODO: set done if parent is already done
         children.push(Arc::downgrade(&ctx.0));
         return ctx;
     }
