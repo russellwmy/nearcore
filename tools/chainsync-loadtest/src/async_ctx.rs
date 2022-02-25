@@ -10,10 +10,29 @@ use core::task;
 use core::future::Future;
 use core::pin::Pin;
 
-#[derive(Debug,Clone)]
+#[derive(Debug,Clone,PartialEq)]
 pub enum Err {
     DeadlineExceeded,
     ContextCancelled,
+}
+
+pub trait CastError: fmt::Display+fmt::Debug+Send+Sync+std::cmp::PartialEq+'static {}
+impl<T> CastError for T where T: fmt::Display+fmt::Debug+Send+Sync+std::cmp::PartialEq+'static {}
+
+pub trait AnyhowCast {
+    fn matches<E:CastError> (&self,err:&E) -> bool;
+}
+
+impl AnyhowCast for anyhow::Error {
+    fn matches<E:CastError>(&self,err:&E) -> bool {
+        return self.downcast_ref::<E>().map(|e|e==err).unwrap_or(false);
+    }
+}
+
+impl<T> AnyhowCast for anyhow::Result<T> {
+    fn matches<E:CastError>(&self,err:&E) -> bool {
+        return self.as_ref().err().map(|e|e.matches(err)).unwrap_or(false);
+    }
 }
 
 impl fmt::Display for Err {
@@ -176,5 +195,9 @@ impl Ctx {
         // TODO: set done if parent is already done
         children.push(Arc::downgrade(&ctx.0));
         return ctx;
+    }
+
+    pub fn with_timeout(&self, timeout : time::Duration) -> Ctx {
+        return self.with_deadline(time::Instant::now()+timeout)
     }
 }

@@ -240,50 +240,6 @@ impl Handler<GetNetworkInfo> for ClientActor {
     }
 }
 
-impl ClientActor {
-    /*
-    /// Main syncing job responsible for syncing client with other peers.
-    /// Runs itself iff it was not ran as reaction for message with results of
-    /// finishing state part job
-    fn sync(&mut self) -> anyhow::Result<time::Duration> {
-        if !self.sync_started {
-            // Wait for connections reach at least minimum peers unless skipping sync.
-            let got = self.network_info.num_connected_peers;
-            let want_min = self.client.config.min_num_peers;
-            if got < want_min  && !self.client.config.skip_sync_wait {
-                info!("SYNC {}/{} peers connected",got,want_min);
-                return Ok(self.client.config.sync_step_period); // TODO: make it an error
-            }
-            info!("SYNC STARTING");
-            self.sync_started = true;
-        }
-        if !self.headers_requested {
-            let peer = self.network_info.highest_height_peers.choose(&mut thread_rng()).ok_or::<Error>("no peers".to_string().into())?;
-            let highest_height = peer.chain_info.height;
-            info!("SYNC highest_height = {}",highest_height);
-           
-            self.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
-                NetworkRequests::BlockHeadersRequest {
-                    hashes: vec![self.next_block_hash],
-                    peer_id: peer.peer_info.id.clone(),
-                },
-            ));
-            info!("SYNC headers requested");
-            self.headers_requested = true;
-        }
-        return Ok(time::Duration::from_secs(1));
-
-        // Returns true if state_sync is needed (we gave up on block syncing).
-        /*self.client.block_sync.run(
-            &mut self.client.chain,
-            highest_height,
-            &self.network_info.highest_height_peers
-        )?;
-        return Ok(self.client.config.sync_step_period);
-        */
-    }*/
-}
-
 impl Handler<ApplyStatePartsResponse> for ClientActor {
     type Result = ();
     fn handle(&mut self, msg: ApplyStatePartsResponse, _: &mut Self::Context) -> Self::Result {}

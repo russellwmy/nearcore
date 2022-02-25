@@ -6,6 +6,7 @@ mod start;
 mod near_client;
 mod async_ctx;
 
+use tokio::time;
 use std::sync::{Arc,Mutex};
 use std::str::FromStr;
 use near_crypto::{Signer};
@@ -28,7 +29,7 @@ use near_network_primitives::types::{
     AccountIdOrPeerTrackingShard,
     PartialEncodedChunkRequestMsg,
 };
-use async_ctx::Ctx;
+use async_ctx::{Ctx,AnyhowCast};
 
 struct ChainSync {
     // client_config.min_num_peers
@@ -37,6 +38,8 @@ struct ChainSync {
     // (see https://cs.github.com/near/nearcore/blob/dae9553670de13c279d3ebd55f17da13d94fa691/nearcore/src/runtime/mod.rs#L1114).
     // AFAICT eventually it will change dynamically (I guess it will be provided in the Block).
     parts_per_chunk : u64,
+
+    request_timeout : tokio::time::Duration,
 }
 
 impl ChainSync {
@@ -48,7 +51,19 @@ impl ChainSync {
         let peer = &peers.highest_height_peers[0];
         let target_height = peer.chain_info.height;
         info!("SYNC target_height = {}",target_height);
-        let mut headers = network.fetch_block_headers(ctx.clone(),peer.peer_info.id.clone(),next_block_hash).await?;
+        let mut headers = async {
+            loop {
+                if let Some(e) = ctx.err() { return Err(anyhow!(e)) }
+                let peers = network.info(ctx.clone(),self.min_num_peers).await?;
+                for peer in &peers.connected_peers {
+                    let res = network.fetch_block_headers(ctx.with_timeout(self.request_timeout),peer.peer_info.id.clone(),next_block_hash).await;
+                    if res.matches(&async_ctx::Err::DeadlineExceeded) {
+                        continue
+                    }
+                    return res; 
+                }
+            }
+        }.await?;
         headers.sort_by_key(|h|h.height());
         let start_height = headers[0].height();
         info!("SYNC start_height = {}, {} blocks to process",start_height,target_height-start_height);
@@ -137,6 +152,7 @@ impl Cmd {
             let chain_sync = ChainSync{
                 min_num_peers: near_config.client_config.min_num_peers,
                 parts_per_chunk: near_config.genesis.config.num_block_producer_seats,
+                request_timeout: time::Duration::from_secs(1),
             };
             let network = start::start_with_config(
                 home_dir,
