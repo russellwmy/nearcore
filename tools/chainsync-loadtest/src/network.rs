@@ -1,8 +1,3 @@
-//! Client actor orchestrates Client and facilitates network connection.
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-#![allow(dead_code)]
-
 use crate::dispatcher::Dispatcher;
 
 use near_primitives::sharding::{ChunkHash, ShardChunkHeader};
@@ -15,15 +10,9 @@ use near_network_primitives::types::{
 use near_primitives::block::{Block, BlockHeader};
 use near_network::types::PeerManagerMessageRequest;
 use near_primitives::hash::CryptoHash;
-use crate::near_client::client::Client;
-use crate::near_client::StatusResponse;
+use near_client_primitives::types::StatusResponse;
 use actix::{Actor, Context, Handler};
 use log::{error, info, warn};
-use near_chain::chain::{
-    ApplyStatePartsResponse, 
-    BlockCatchUpResponse, StateSplitResponse,
-};
-use near_chain::test_utils::format_hash;
 use near_chain::{ChainGenesis,RuntimeAdapter};
 use near_chain_configs::ClientConfig;
 use near_client_primitives::types::{
@@ -38,7 +27,6 @@ use near_performance_metrics;
 use near_performance_metrics_macros::{perf, perf_with_debug};
 use near_primitives::epoch_manager::RngSeed;
 use near_primitives::network::{PeerId};
-use near_primitives::time::{Utc};
 use near_primitives::utils::{from_timestamp};
 use near_primitives::validator_signer::ValidatorSigner;
 use near_primitives::version::PROTOCOL_VERSION;
@@ -50,6 +38,28 @@ use tokio::sync::oneshot;
 use tokio::sync;
 use tokio::time;
 use crate::async_ctx::Ctx;
+use governor::Quota;
+
+type RateLimiter = governor::RateLimiter<
+    governor::state::direct::NotKeyed,
+    governor::state::InMemoryState,
+    governor::clock::DefaultClock,
+    governor::middleware::NoOpMiddleware
+>; 
+
+async fn retry<'a,F,T>(&self,ctx:Ctx,make_future:impl Fn(Ctx,PeerId) -> F) -> anyhow::Result<T> where
+    F : Future<Output=anyhow::Result<T>> + 'a
+{
+    loop {
+        for peer in &self.network.info(ctx.clone(),self.min_num_peers).await?.connected_peers {
+            let res = make_future(ctx.with_timeout(self.request_timeout),peer.peer_info.id.clone()).await;
+            if !res.matches(&async_ctx::Err::DeadlineExceeded) {
+                return res;
+            }
+            info!("SYNC deadline exceeded, retrying");
+        }
+    }
+}
 
 struct NetworkData {
     info_futures: Vec<(oneshot::Sender<Arc<NetworkInfo>>,usize)>,
@@ -62,10 +72,15 @@ pub struct Network {
     block_disp: Dispatcher<CryptoHash,Block>,
     chunk_disp: Dispatcher<ChunkHash,PartialEncodedChunkResponseMsg>,
     data : Mutex<NetworkData>,
+
+    // client_config.min_num_peers
+    min_num_peers : usize,
+    request_timeout : tokio::time::Duration,
+    rate_limiter : RateLimiter,
 }
 
 impl Network {
-    pub fn new(network_adapter:Arc<dyn PeerManagerAdapter>) -> Arc<Network> {
+    pub fn new(config:&NearConfig,network_adapter:Arc<dyn PeerManagerAdapter>) -> Arc<Network> {
         Arc::new(Network{
             network_adapter,
             data: Mutex::new(NetworkData{
@@ -84,6 +99,10 @@ impl Network {
             block_disp: Default::default(),
             block_headers_disp: Default::default(),
             chunk_disp: Default::default(),
+
+            min_num_peers: config.client_config.min_num_peers,
+            rate_limiter: RateLimiter::direct(Quota::per_second(std::num::NonZeroU32::new(10).unwrap())),
+            request_timeout: time::Duration::from_secs(2),
         })
     }
     
@@ -154,7 +173,6 @@ impl Network {
                 self.block_disp.send(&block.hash().clone(),block);
             }
             NetworkClientMessages::BlockHeaders(headers,peer_id) => {
-                info!("GOT some headers, yay");
                 if let Some(h) = headers.iter().min_by_key(|h|h.height()) {
                     let hash = h.prev_hash().clone();
                     self.block_headers_disp.send(&hash,headers);
@@ -169,25 +187,12 @@ impl Network {
 }
 
 pub struct ClientActor {
-    /// Identity that represents this Client at the network level.
-    /// It is used as part of the messages that identify this client.
-    node_id: PeerId,
     network : Arc<Network>,
 }
 
 impl ClientActor {
-    pub fn new(
-        config: ClientConfig,
-        chain_genesis: ChainGenesis,
-        runtime_adapter: Arc<dyn RuntimeAdapter>,
-        node_id: PeerId,
-        network_adapter: Arc<dyn PeerManagerAdapter>,
-        network: Arc<Network>,
-    ) -> Result<Self, Error> {
-        Ok(ClientActor {
-            node_id,
-            network,
-        })
+    pub fn new(network: Arc<Network>) -> Self {
+        ClientActor{network}
     }
 }
 
@@ -203,33 +208,3 @@ impl Handler<NetworkClientMessages> for ClientActor {
     }
 }
 
-impl Handler<Status> for ClientActor {
-    type Result = Result<StatusResponse, StatusError>;
-    fn handle(&mut self, msg: Status, _ctx: &mut Context<Self>) -> Self::Result {
-        return Err(StatusError::NodeIsSyncing);
-    }
-}
-
-impl Handler<GetNetworkInfo> for ClientActor {
-    type Result = Result<NetworkInfoResponse, String>;
-
-    #[perf]
-    fn handle(&mut self, _msg: GetNetworkInfo, _ctx: &mut Context<Self>) -> Self::Result {
-        return Err("dupa123".into()); 
-    }
-}
-
-impl Handler<ApplyStatePartsResponse> for ClientActor {
-    type Result = ();
-    fn handle(&mut self, msg: ApplyStatePartsResponse, _: &mut Self::Context) -> Self::Result {}
-}
-
-impl Handler<BlockCatchUpResponse> for ClientActor {
-    type Result = ();
-    fn handle(&mut self, msg: BlockCatchUpResponse, _: &mut Self::Context) -> Self::Result {}
-}
-
-impl Handler<StateSplitResponse> for ClientActor {
-    type Result = ();
-    fn handle(&mut self, msg: StateSplitResponse, _: &mut Self::Context) -> Self::Result {}
-}
