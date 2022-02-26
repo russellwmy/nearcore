@@ -169,7 +169,6 @@ impl Network {
 }
 
 pub struct ClientActor {
-    client: Client,
     /// Identity that represents this Client at the network level.
     /// It is used as part of the messages that identify this client.
     node_id: PeerId,
@@ -185,15 +184,7 @@ impl ClientActor {
         network_adapter: Arc<dyn PeerManagerAdapter>,
         network: Arc<Network>,
     ) -> Result<Self, Error> {
-        let client = Client::new(
-            config,
-            chain_genesis,
-            runtime_adapter,
-            network_adapter.clone(),
-        )?;
-
         Ok(ClientActor {
-            client,
             node_id,
             network,
         })
