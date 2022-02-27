@@ -1,3 +1,5 @@
+use futures::task;
+
 struct Eventual_<T:Clone> {
     value:Option<T>,
     waiters: Vec<Weak<RwLock<Waiter_<T>>>>,

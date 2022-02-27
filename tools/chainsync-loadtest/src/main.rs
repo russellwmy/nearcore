@@ -2,21 +2,31 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-mod start;
 mod network;
-mod async;
-mod sync_chain;
+mod concurrency;
+mod fetch_chain;
 
 use std::path::{Path};
-use std::sync::{Arc};
+use std::sync::{Arc,Mutex};
+use std::str::FromStr;
+use std::{env, io};
 
+use anyhow::{anyhow,Context};
+use clap::{AppSettings, Clap};
+use core::future::Future;
+use futures::future::FutureExt;
+use futures::task::SpawnExt;
+use tokio::time;
 use actix::{Actor, Arbiter};
-use anyhow::Context;
-use tracing::{info};
+use openssl_probe;
+use tracing::metadata::LevelFilter;
+use tracing::{info,error};
+use tracing_subscriber::EnvFilter;
+
+use concurrency::{Ctx,AnyhowCast};
+use network::{ClientActor,Network};
 
 use near_chain::ChainGenesis;
-use crate::network::{ClientActor,Network};
-
 use near_client::{start_view_client};
 use near_network::routing::start_routing_table_actor;
 use near_network::test_utils::NetworkRecipient;
@@ -25,34 +35,16 @@ use near_primitives::network::PeerId;
 use near_store::{Store,db};
 use nearcore::config::NearConfig;
 use nearcore::NightshadeRuntime;
-
-
-use futures::future::FutureExt;
-use futures::task::SpawnExt;
-use core::future::Future;
-use tokio::time;
-use std::sync::{Arc,Mutex};
-use std::str::FromStr;
 use near_crypto::{Signer};
-use anyhow::{anyhow,Context};
 use near_primitives::version;
-use openssl_probe;
-use clap::{AppSettings, Clap};
 use near_chain_configs::{ClientConfig,GenesisValidationMode};
 use nearcore::config;
-use std::path::Path;
-use std::{env, io};
-use tracing::metadata::LevelFilter;
-use tracing::{info,error};
-use tracing_subscriber::EnvFilter;
 use near_primitives::hash::CryptoHash;
-use near_primitives::network::{PeerId};
 use near_network::types::{NetworkClientMessages,NetworkRequests};
 use near_network_primitives::types::{
     AccountIdOrPeerTrackingShard,
     PartialEncodedChunkRequestMsg,
 };
-use async_ctx::{Ctx,AnyhowCast};
 
 pub fn start_with_config(home_dir: &Path, config: NearConfig) -> anyhow::Result<Arc<Network>> {
     config.network_config.verify().context("start_with_config")?;
@@ -167,7 +159,7 @@ impl Cmd {
         return actix::System::new().block_on(async move {
             let chain_sync = Arc::new(ChainSync{
                 parts_per_chunk: near_config.genesis.config.num_block_producer_seats,
-                network: start::start_with_config(
+                network: start_with_config(
                     home_dir,
                     near_config,
                 ).context("start_with_config")?,

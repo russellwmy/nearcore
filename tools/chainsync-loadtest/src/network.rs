@@ -1,6 +1,5 @@
-use crate::dispatcher::Dispatcher;
+use crate::concurrency::{Ctx,Dispatcher};
 
-use near_primitives::sharding::{ChunkHash, ShardChunkHeader};
 use near_network_primitives::types::{
     AccountIdOrPeerTrackingShard,
     PartialEncodedChunkRequestMsg,
@@ -37,7 +36,6 @@ use std::sync::{Arc,Weak,Mutex,RwLock};
 use tokio::sync::oneshot;
 use tokio::sync;
 use tokio::time;
-use crate::async_ctx::Ctx;
 use governor::Quota;
 
 type RateLimiter = governor::RateLimiter<
@@ -47,19 +45,7 @@ type RateLimiter = governor::RateLimiter<
     governor::middleware::NoOpMiddleware
 >; 
 
-async fn retry<'a,F,T>(&self,ctx:Ctx,make_future:impl Fn(Ctx,PeerId) -> F) -> anyhow::Result<T> where
-    F : Future<Output=anyhow::Result<T>> + 'a
-{
-    loop {
-        for peer in &self.network.info(ctx.clone(),self.min_num_peers).await?.connected_peers {
-            let res = make_future(ctx.with_timeout(self.request_timeout),peer.peer_info.id.clone()).await;
-            if !res.matches(&async_ctx::Err::DeadlineExceeded) {
-                return res;
-            }
-            info!("SYNC deadline exceeded, retrying");
-        }
-    }
-}
+
 
 struct NetworkData {
     info_futures: Vec<(oneshot::Sender<Arc<NetworkInfo>>,usize)>,
@@ -106,6 +92,14 @@ impl Network {
         })
     }
     
+    async fn keep_sending(&self, ctx:Ctx, interval: time::Duration,new_req:Fn(PeerId) -> PeerManagerMessageRequest) -> anyhow::Result<()> {
+        for peer in &self.network.info(ctx.clone()).await?.connected_peers {
+            loop {
+                self.network_adapter.do_send(new_req(peer));
+                ctx.wait(interval).await?;
+            }
+        }
+    }
 
     pub async fn info(&self, ctx:Ctx, min_peers:usize) -> anyhow::Result<Arc<NetworkInfo>> {
         let (send,recv) = oneshot::channel();

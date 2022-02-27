@@ -1,3 +1,7 @@
+use log::{error, info, warn};
+
+use crate::network;
+
 struct ChainSync {
     network: Arc<network::Network>,
     

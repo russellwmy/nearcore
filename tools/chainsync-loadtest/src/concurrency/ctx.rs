@@ -89,7 +89,10 @@ impl Ctx {
         let x = self.clone();
         match x.0.deadline {
             Some(d) => match time::timeout_at(d,x.0.done.wait()).await {
-                Err(_) => Err::DeadlineExceeded,
+                Err(_) => {
+                    x.0.done.set(Err::DeadlineExceeded);
+                    x.0.done.get() // get(), because there can be a race condition on set().
+                }
                 Ok(e) => e,
             }
             None => x.0.done.wait().await,
@@ -103,6 +106,10 @@ impl Ctx {
             v = f => return Ok(v),
             v = self.done() => return Err(v),
         }
+    }
+
+    pub async fn wait(&self, duration:tokio::Duration) -> anyhow::Result<()> {
+        self.wrap(tokio::delay_for(duration))?;
     }
 
     pub fn with_cancel(&self) -> (Ctx,impl Fn()->()) {
