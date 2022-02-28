@@ -109,6 +109,10 @@ impl Ctx {
         }
     }
 
+    pub async fn wait_until(&self, deadline:time::Instant) -> Result<(),Err> {
+        self.wrap(time::sleep_until(deadline)).await
+    }
+
     pub async fn wait(&self, duration:time::Duration) -> Result<(),Err> {
         self.wrap(time::sleep(duration)).await
     }

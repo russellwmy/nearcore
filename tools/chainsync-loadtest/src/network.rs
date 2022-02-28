@@ -1,4 +1,4 @@
-use crate::concurrency::{Ctx,Dispatcher,Scope};
+use crate::concurrency::{Ctx,Dispatcher,Scope,RateLimiter};
 
 use near_network_primitives::types::{
     AccountIdOrPeerTrackingShard,
@@ -39,14 +39,6 @@ use std::sync::{Arc,Weak,Mutex,RwLock};
 use tokio::sync::oneshot;
 use tokio::sync;
 use tokio::time;
-use governor::Quota;
-
-type RateLimiter = governor::RateLimiter<
-    governor::state::direct::NotKeyed,
-    governor::state::InMemoryState,
-    governor::clock::DefaultClock,
-    governor::middleware::NoOpMiddleware
->; 
 
 struct NetworkData {
     info_futures: Vec<oneshot::Sender<Arc<NetworkInfo>>>,
@@ -65,7 +57,7 @@ pub struct Network {
     // Currently it is equivalent to genesis_config.num_block_producer_seats,
     // (see https://cs.github.com/near/nearcore/blob/dae9553670de13c279d3ebd55f17da13d94fa691/nearcore/src/runtime/mod.rs#L1114).
     // AFAICT eventually it will change dynamically (I guess it will be provided in the Block).
-    pub parts_per_chunk : u64,
+    parts_per_chunk : u64,
     
     request_timeout : tokio::time::Duration,
     rate_limiter : RateLimiter,
@@ -94,7 +86,7 @@ impl Network {
 
             min_peers: config.client_config.min_num_peers,
             parts_per_chunk: config.genesis.config.num_block_producer_seats,
-            rate_limiter: RateLimiter::direct(Quota::per_second(std::num::NonZeroU32::new(10).unwrap())),
+            rate_limiter : RateLimiter::new(time::Duration::from_secs(1)/10,10),
             request_timeout: time::Duration::from_secs(2),
         })
     }
@@ -105,6 +97,7 @@ impl Network {
         async move {
             loop {
                 for peer in &self_.info(&ctx).await?.connected_peers {
+                    self_.rate_limiter.allow(&ctx).await?;
                     self_.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
                         new_req(peer.clone())
                     ));
