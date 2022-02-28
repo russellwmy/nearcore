@@ -6,12 +6,13 @@ use near_network_primitives::types::{
     AccountIdOrPeerTrackingShard,
     PartialEncodedChunkRequestMsg,
     PartialEncodedChunkResponseMsg,
+    NetworkViewClientMessages, NetworkViewClientResponses,
 };
 
 use std::future::Future;
 use nearcore::config::NearConfig;
 use near_primitives::sharding::{ChunkHash,ShardChunkHeader};
-use near_primitives::block::{Block, BlockHeader};
+use near_primitives::block::{Block, BlockHeader, GenesisId};
 use near_primitives::hash::CryptoHash;
 use near_client_primitives::types::StatusResponse;
 use actix::{Actor, Context, Handler};
@@ -23,7 +24,7 @@ use near_client_primitives::types::{
     StatusError, StatusSyncInfo, 
 };
 use near_network::types::{
-    NetworkClientMessages, NetworkClientResponses, NetworkInfo, 
+    NetworkClientMessages, NetworkClientResponses, NetworkInfo,
     PeerManagerAdapter, NetworkRequests,
     PeerManagerMessageRequest,FullPeerInfo,
 };
@@ -41,6 +42,13 @@ use std::sync::{Arc,Weak,Mutex,RwLock};
 use tokio::sync::oneshot;
 use tokio::sync;
 use tokio::time;
+
+fn genesis_hash(chain_id:&str) -> CryptoHash {
+	return match chain_id {
+		"mainnet" => "EPnLgE7iEq9s7yTkos96M3cWymH5avBAPm3qx3NXqR8H",
+		_ => panic!("missing hash for chain_id = {}",chain_id),
+	}.parse().unwrap()
+}
 
 #[derive(Default,Debug)]
 pub struct Stats {
@@ -256,6 +264,39 @@ impl ClientActor {
 
 impl Actor for ClientActor {
     type Context = Context<Self>;
+}
+
+
+impl Handler<NetworkViewClientMessages> for ClientActor {
+    type Result = NetworkViewClientResponses;
+    fn handle(&mut self, msg: NetworkViewClientMessages, _ctx: &mut Self::Context) -> Self::Result {
+        let name = match msg {
+			NetworkViewClientMessages::TxStatus{..} => {"TxStatus"} 
+			NetworkViewClientMessages::TxStatusResponse(_) => {"TxStatusResponse"}
+			NetworkViewClientMessages::ReceiptOutcomeRequest(_) => {"ReceiptOutcomeRequest"}
+			NetworkViewClientMessages::ReceiptOutcomeResponse(_) => {"ReceiptOutputResponse"}
+			NetworkViewClientMessages::BlockRequest(_) =>  {"BlockRequest"}
+			NetworkViewClientMessages::BlockHeadersRequest(_) => {"BlockHeadersRequest"}
+			NetworkViewClientMessages::StateRequestHeader{..} => {"StateRequestHeader"}
+			NetworkViewClientMessages::StateRequestPart{..}=> {"StateRequestPart"}
+			NetworkViewClientMessages::EpochSyncRequest{..}=> {"EpochSyncRequest"}
+			NetworkViewClientMessages::EpochSyncFinalizationRequest{..}=>{"EpochSyncFinalizationRequest"}
+			NetworkViewClientMessages::GetChainInfo => {
+				return NetworkViewClientResponses::ChainInfo {
+					genesis_id: GenesisId {
+						chain_id: "mainnet".to_string(), 
+						hash: genesis_hash("mainnet"), 
+					},
+					height: 0, 
+					tracked_shards: Default::default(), 
+					archival: false, 
+				}
+			}
+			NetworkViewClientMessages::AnnounceAccount(_) => {"AnnounceAccount"}
+		};
+		info!("view_request: {}",name);
+        return NetworkViewClientResponses::NoResponse;
+    }
 }
 
 impl Handler<NetworkClientMessages> for ClientActor {

@@ -49,41 +49,22 @@ use near_network_primitives::types::{
 pub fn start_with_config(home_dir: &Path, config: NearConfig) -> anyhow::Result<Arc<Network>> {
     config.network_config.verify().context("start_with_config")?;
     let node_id = PeerId::new(config.network_config.public_key.clone());
-    let chain_genesis = ChainGenesis::from(&config.genesis);
     let store = Store::new(Arc::new(db::TestDB::new()));
 
-    let runtime = Arc::new(NightshadeRuntime::with_config(
-        home_dir,
-        store.clone(),
-        &config,
-        config.client_config.trie_viewer_state_size_limit,
-        config.client_config.max_gas_burnt_view,
-    ));
-
     let network_adapter = Arc::new(NetworkRecipient::default());
-
-    let view_client = start_view_client(
-        config.validator_signer.as_ref().map(|signer| signer.validator_id().clone()),
-        chain_genesis.clone(),
-        runtime.clone(),
-        network_adapter.clone(),
-        config.client_config.clone(),
-    ).recipient();
     let network = Network::new(&config,network_adapter.clone()); 
-    let client_actor = {
+    let client_actor = ClientActor::start_in_arbiter(&Arbiter::new().handle(), {
         let network = network.clone();
-        ClientActor::start_in_arbiter(&Arbiter::new().handle(), move |_ctx| {
-            ClientActor::new(network)
-        }).recipient()
-    };
+        move|_| ClientActor::new(network)
+    });
 
     let routing_table_addr = start_routing_table_actor(node_id, store.clone());
     let network_actor = PeerManagerActor::start_in_arbiter(&Arbiter::new().handle(), move |_ctx| {
         PeerManagerActor::new(
             store,
             config.network_config,
-            client_actor,
-            view_client,
+            client_actor.clone().recipient(),
+            client_actor.clone().recipient(),
             routing_table_addr,
         )
         .unwrap()
