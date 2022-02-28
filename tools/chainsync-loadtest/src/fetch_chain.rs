@@ -20,7 +20,9 @@ pub async fn run(ctx:Ctx, network: Arc<network::Network>, start_block_hash: Cryp
             |ctx,s| async move{
                 loop {
                     info!("stats = {:?}",network.stats);
-                    ctx.wait(time::Duration::from_secs(10)).await?;
+                    info!("before wait");
+                    ctx.wait(time::Duration::from_secs(2)).await?;
+                    info!("after wait");
                 }
             }
         });

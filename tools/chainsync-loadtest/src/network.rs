@@ -143,7 +143,8 @@ impl Network {
         let self_ = self.clone();
         let hash = hash.clone();
         let recv = self.block_headers_disp.subscribe(&hash);
-        Scope::run(ctx,|ctx,s|async move{
+        let (ctx,cancel) = ctx.with_cancel();
+        Scope::run(&ctx,|ctx,s|async move{
             self_.stats.header_req.fetch_add(1,Ordering::Relaxed);
             s.spawn({
                 let self_ = self_.clone();
@@ -156,6 +157,7 @@ impl Network {
             });
             let res = ctx.wrap(recv).await?;
             self_.stats.header_resp.fetch_add(1,Ordering::Relaxed);
+            cancel();
             anyhow::Ok(res)
         }).await
     }
