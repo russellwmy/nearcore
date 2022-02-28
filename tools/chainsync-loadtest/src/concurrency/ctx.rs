@@ -2,14 +2,15 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
+use crate::concurrency::Eventual;
 use std::sync::{Arc,Weak,Mutex,RwLock};
 use std::marker::PhantomData;
 use tokio::sync;
 use tokio::time;
 use std::fmt;
-use core::task;
-use core::future::Future;
-use core::pin::Pin;
+use std::task;
+use std::future::Future;
+use std::pin::Pin;
 
 #[derive(Debug,Clone,PartialEq)]
 pub enum Err {
@@ -91,7 +92,7 @@ impl Ctx {
             Some(d) => match time::timeout_at(d,x.0.done.wait()).await {
                 Err(_) => {
                     x.0.done.set(Err::DeadlineExceeded);
-                    x.0.done.get() // get(), because there can be a race condition on set().
+                    x.0.done.get().unwrap() // get(), because there can be a race condition on set().
                 }
                 Ok(e) => e,
             }
@@ -108,14 +109,14 @@ impl Ctx {
         }
     }
 
-    pub async fn wait(&self, duration:tokio::Duration) -> anyhow::Result<()> {
-        self.wrap(tokio::delay_for(duration))?;
+    pub async fn wait(&self, duration:time::Duration) -> Result<(),Err> {
+        self.wrap(time::sleep(duration)).await
     }
 
     pub fn with_cancel(&self) -> (Ctx,impl Fn()->()) {
         let mut children = self.0.children.write().unwrap();
         let done = if let Some(_) = self.0.done.get() {
-            Eventual(self.0.done.0.clone())
+            self.0.done.clone()
         } else {
             Eventual::new()
         };
@@ -134,7 +135,7 @@ impl Ctx {
         let mut children = self.0.children.write().unwrap();
         let ctx = Ctx(Arc::new(Ctx_{
             parent: Some(self.0.clone()),
-            done: Eventual(self.0.done.0.clone()),
+            done: self.0.done.clone(),
             deadline: Some(std::cmp::min(deadline,self.0.deadline.unwrap_or(deadline))),
             children: RwLock::new(vec![]),
         }));

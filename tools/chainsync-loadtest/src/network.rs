@@ -1,4 +1,4 @@
-use crate::concurrency::{Ctx,Dispatcher};
+use crate::concurrency::{Ctx,Dispatcher,Scope};
 
 use near_network_primitives::types::{
     AccountIdOrPeerTrackingShard,
@@ -6,8 +6,10 @@ use near_network_primitives::types::{
     PartialEncodedChunkResponseMsg,
 };
 
+use std::future::Future;
+use nearcore::config::NearConfig;
+use near_primitives::sharding::{ChunkHash,ShardChunkHeader};
 use near_primitives::block::{Block, BlockHeader};
-use near_network::types::PeerManagerMessageRequest;
 use near_primitives::hash::CryptoHash;
 use near_client_primitives::types::StatusResponse;
 use actix::{Actor, Context, Handler};
@@ -21,6 +23,7 @@ use near_client_primitives::types::{
 use near_network::types::{
     NetworkClientMessages, NetworkClientResponses, NetworkInfo, 
     PeerManagerAdapter, NetworkRequests,
+    PeerManagerMessageRequest,FullPeerInfo,
 };
 use near_performance_metrics;
 use near_performance_metrics_macros::{perf, perf_with_debug};
@@ -45,10 +48,8 @@ type RateLimiter = governor::RateLimiter<
     governor::middleware::NoOpMiddleware
 >; 
 
-
-
 struct NetworkData {
-    info_futures: Vec<(oneshot::Sender<Arc<NetworkInfo>>,usize)>,
+    info_futures: Vec<oneshot::Sender<Arc<NetworkInfo>>>,
     info_ : Arc<NetworkInfo>,
 }
 
@@ -60,7 +61,12 @@ pub struct Network {
     data : Mutex<NetworkData>,
 
     // client_config.min_num_peers
-    min_num_peers : usize,
+    min_peers : usize,
+    // Currently it is equivalent to genesis_config.num_block_producer_seats,
+    // (see https://cs.github.com/near/nearcore/blob/dae9553670de13c279d3ebd55f17da13d94fa691/nearcore/src/runtime/mod.rs#L1114).
+    // AFAICT eventually it will change dynamically (I guess it will be provided in the Block).
+    pub parts_per_chunk : u64,
+    
     request_timeout : tokio::time::Duration,
     rate_limiter : RateLimiter,
 }
@@ -86,66 +92,94 @@ impl Network {
             block_headers_disp: Default::default(),
             chunk_disp: Default::default(),
 
-            min_num_peers: config.client_config.min_num_peers,
+            min_peers: config.client_config.min_num_peers,
+            parts_per_chunk: config.genesis.config.num_block_producer_seats,
             rate_limiter: RateLimiter::direct(Quota::per_second(std::num::NonZeroU32::new(10).unwrap())),
             request_timeout: time::Duration::from_secs(2),
         })
     }
     
-    async fn keep_sending(&self, ctx:Ctx, interval: time::Duration,new_req:Fn(PeerId) -> PeerManagerMessageRequest) -> anyhow::Result<()> {
-        for peer in &self.network.info(ctx.clone()).await?.connected_peers {
+    fn keep_sending(self:&Arc<Self>, ctx:&Ctx, new_req:impl Fn(FullPeerInfo) -> NetworkRequests) -> impl Future<Output=anyhow::Result<()>> {
+        let self_ = self.clone();
+        let ctx = ctx.clone();
+        async move {
             loop {
-                self.network_adapter.do_send(new_req(peer));
-                ctx.wait(interval).await?;
+                for peer in &self_.info(&ctx).await?.connected_peers {
+                    self_.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
+                        new_req(peer.clone())
+                    ));
+                    ctx.wait(self_.request_timeout).await?;
+                }
             }
         }
     }
 
-    pub async fn info(&self, ctx:Ctx, min_peers:usize) -> anyhow::Result<Arc<NetworkInfo>> {
+    pub async fn info(self:&Arc<Self>, ctx:&Ctx) -> anyhow::Result<Arc<NetworkInfo>> {
         let (send,recv) = oneshot::channel();
         {
             let mut n = self.data.lock().unwrap();
-            if n.info_.num_connected_peers>=min_peers {
+            if n.info_.num_connected_peers>=self.min_peers {
                 let _ = send.send(n.info_.clone());
             } else {
-                n.info_futures.push((send,min_peers));
+                n.info_futures.push(send);
             }
         }
         anyhow::Ok(ctx.wrap(recv).await??)
     }
 
-    pub async fn fetch_block_headers(&self, ctx:Ctx, peer_id:PeerId, hash:CryptoHash) -> anyhow::Result<Vec<BlockHeader>> {
-        self.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
-            NetworkRequests::BlockHeadersRequest{hashes:vec![hash.clone()],peer_id:peer_id.clone()},
-        ));
-        Ok(ctx.wrap(self.block_headers_disp.subscribe(&hash)).await?)
+    pub async fn fetch_block_headers(self:&Arc<Self>, ctx:&Ctx, hash:&CryptoHash) -> anyhow::Result<Vec<BlockHeader>> {
+        let self_ = self.clone();
+        let hash = hash.clone();
+        let recv = self.block_headers_disp.subscribe(&hash);
+        Scope::run(ctx,|ctx,s|async move{
+            s.spawn(move |ctx,s|self_.keep_sending(&ctx,move|peer|{
+                NetworkRequests::BlockHeadersRequest{
+                    hashes: vec![hash.clone()],
+                    peer_id: peer.peer_info.id.clone(),
+                }
+            }));
+            anyhow::Ok(ctx.wrap(recv).await?)
+        }).await
     }
 
-    pub async fn fetch_block(&self, ctx:Ctx, peer_id:PeerId, hash:CryptoHash) -> anyhow::Result<Block> {
-        self.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
-            NetworkRequests::BlockRequest{hash:hash.clone(),peer_id:peer_id.clone()},
-        ));
-        Ok(ctx.wrap(self.block_disp.subscribe(&hash)).await?)
+    pub async fn fetch_block(self:&Arc<Self>, ctx:&Ctx, hash:&CryptoHash) -> anyhow::Result<Block> {
+        let self_ = self.clone();
+        let hash = hash.clone();
+        let recv = self_.block_disp.subscribe(&hash);
+        Scope::run(ctx,|ctx,s|async move{
+            s.spawn(move |ctx,s|self_.keep_sending(&ctx,move|peer|{
+                NetworkRequests::BlockRequest{
+                    hash:hash.clone(),
+                    peer_id: peer.peer_info.id.clone(),
+                }
+            }));
+            anyhow::Ok(ctx.wrap(recv).await?)
+        }).await
     }
 
-    pub async fn fetch_chunk(&self, ctx:Ctx, ch:&ShardChunkHeader, parts:Vec<u64>) -> anyhow::Result<PartialEncodedChunkResponseMsg> {
-        self.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
-            NetworkRequests::PartialEncodedChunkRequest{
-                target: AccountIdOrPeerTrackingShard {
-                    account_id: None,
-                    prefer_peer: true, 
-                    shard_id: ch.shard_id(),
-                    only_archival: false,
-                    min_height: ch.height_included(),
-                },
-                request: PartialEncodedChunkRequestMsg {
-                    chunk_hash: ch.chunk_hash(),
-                    part_ords: parts, 
-                    tracking_shards: Default::default(),
-                },
-            },
-        ));
-        Ok(ctx.wrap(self.chunk_disp.subscribe(&ch.chunk_hash())).await?)
+    pub async fn fetch_chunk(self:&Arc<Self>, ctx:&Ctx, ch:&ShardChunkHeader) -> anyhow::Result<PartialEncodedChunkResponseMsg> {
+        let self_ = self.clone();
+        let ch = ch.clone();
+        let recv = self_.chunk_disp.subscribe(&ch.chunk_hash());
+        Scope::run(ctx,|ctx,s|async move{
+            s.spawn(move |ctx,s|self_.clone().keep_sending(&ctx,move|peer|{
+                NetworkRequests::PartialEncodedChunkRequest{
+                    target: AccountIdOrPeerTrackingShard {
+                        account_id: None,
+                        prefer_peer: true, 
+                        shard_id: ch.shard_id(),
+                        only_archival: false,
+                        min_height: ch.height_included(),
+                    },
+                    request: PartialEncodedChunkRequestMsg {
+                        chunk_hash: ch.chunk_hash(),
+                        part_ords: (0..self_.clone().parts_per_chunk).collect(), 
+                        tracking_shards: Default::default(),
+                    },
+                }
+            }));
+            anyhow::Ok(ctx.wrap(recv).await?)
+        }).await
     }
 
     fn notify(&self, msg : NetworkClientMessages) {
@@ -153,14 +187,12 @@ impl Network {
         match msg {
             NetworkClientMessages::NetworkInfo(info) => {
                 n.info_ = Arc::new(info);
-                let it = n.info_futures.split_off(0);
-                for (s,min) in it {
-                    if n.info_.num_connected_peers>=min {
-                        let _ = s.send(n.info_.clone());
-                    } else {
-                        info!("connected = {}/{}",n.info_.num_connected_peers,min);
-                        n.info_futures.push((s,min));
-                    }
+                if n.info_.num_connected_peers<self.min_peers {
+                    info!("connected = {}/{}",n.info_.num_connected_peers,self.min_peers);
+                    return;
+                }
+                for s in n.info_futures.split_off(0) {
+                    s.send(n.info_.clone()).unwrap();
                 }
             }
             NetworkClientMessages::Block(block,peer_id,_) => {

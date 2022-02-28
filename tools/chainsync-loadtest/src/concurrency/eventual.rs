@@ -1,4 +1,7 @@
-use futures::task;
+use std::task;
+use std::future::Future;
+use std::sync::{Arc,Weak,RwLock};
+use std::pin::Pin;
 
 struct Eventual_<T:Clone> {
     value:Option<T>,
@@ -10,18 +13,20 @@ struct Waiter_<T:Clone> {
     e:Arc<RwLock<Eventual_<T>>>,
 }
 
+#[derive(Clone)]
 pub struct Eventual<T:Clone>(Arc<RwLock<Eventual_<T>>>);
+
 pub struct Waiter<T:Clone>(Arc<RwLock<Waiter_<T>>>);
 
 impl<T:Clone> Eventual<T> {
-    fn new() -> Eventual<T> {
+    pub fn new() -> Eventual<T> {
         return Eventual(Arc::new(RwLock::new(Eventual_{
             value: None,
             waiters: vec![],
         }))); 
     }
 
-    fn set(&self, v : T) -> bool {
+    pub fn set(&self, v : T) -> bool {
         let ws = {
             let mut e = self.0.write().unwrap();
             if e.value.is_some() { return false; }
@@ -35,11 +40,11 @@ impl<T:Clone> Eventual<T> {
         return true;
     }
    
-    fn get(&self) -> Option<T> {
+    pub fn get(&self) -> Option<T> {
         return self.0.read().unwrap().value.clone();
     }
 
-    fn wait(&self) -> Waiter<T> {
+    pub fn wait(&self) -> Waiter<T> {
         let mut e = self.0.write().unwrap();
         let w = Arc::new(RwLock::new(Waiter_{waker:None,e:self.0.clone()}));
         e.waiters.push(Arc::downgrade(&w));

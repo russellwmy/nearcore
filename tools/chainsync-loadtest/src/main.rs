@@ -69,7 +69,7 @@ pub fn start_with_config(home_dir: &Path, config: NearConfig) -> anyhow::Result<
         network_adapter.clone(),
         config.client_config.clone(),
     ).recipient();
-    let network = Network::new(config,network_adapter.clone()); 
+    let network = Network::new(&config,network_adapter.clone()); 
     let client_actor = {
         let network = network.clone();
         ClientActor::start_in_arbiter(&Arbiter::new().handle(), move |_ctx| {
@@ -157,17 +157,14 @@ impl Cmd {
         let rt_ = Arc::new(tokio::runtime::Runtime::new()?);
         let rt = rt_.clone();
         return actix::System::new().block_on(async move {
-            let chain_sync = Arc::new(ChainSync{
-                parts_per_chunk: near_config.genesis.config.num_block_producer_seats,
-                network: start_with_config(
-                    home_dir,
-                    near_config,
-                ).context("start_with_config")?,
-            });
+            let network = start_with_config(
+                home_dir,
+                near_config,
+            ).context("start_with_config")?;
             // We execute the chain_sync on a totally separate set of system threads to minimize
             // the interaction with actix.
             let (ctx,cancel) = Ctx::background().with_cancel();
-            let handle = rt.spawn(chain_sync.run(ctx,start_block_hash));
+            let handle = rt.spawn(fetch_chain::run(ctx,network,start_block_hash));
 
             let sig = if cfg!(unix) {
                 use tokio::signal::unix::{signal, SignalKind};
