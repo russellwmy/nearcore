@@ -11,6 +11,7 @@ use std::fmt;
 use std::task;
 use std::future::Future;
 use std::pin::Pin;
+use log::{info};
 
 #[derive(Debug,Clone,PartialEq)]
 pub enum Err {
@@ -79,9 +80,11 @@ impl Ctx {
 
     fn cancel(&self) {
         if !self.0.done.set(Err::ContextCancelled) { return; }
-        let _ = self.0.children.write().unwrap().drain(0..)
-            .map(|c|c.upgrade()).flatten()
-            .map(|c|Ctx(c).cancel());
+        for c in self.0.children.write().unwrap().split_off(0) {
+            if let Some(c) = c.upgrade() {
+                Ctx(c).cancel();
+            }
+        }
     }
 
     pub fn err(&self) -> Option<Err> { self.0.done.get() }

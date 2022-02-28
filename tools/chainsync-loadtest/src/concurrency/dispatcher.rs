@@ -21,6 +21,9 @@ struct Receiver_<K:Hash+Eq+Clone,V:Clone> {
     waker : Option<task::Waker>,
 }
 
+// TODO: Decompose dispatcher into
+// 1. a generic collection of weak pointers
+// 2. a tokio::sync::Notify, based dispatcher of a single value.
 pub struct Dispatcher<K:Hash+Eq+Clone,V:Clone>(Arc<Mutex<Dispatcher_<K,V>>>);
 
 pub struct Receiver<K:Hash+Eq+Clone,V:Clone>(Arc<Mutex<Receiver_<K,V>>>);

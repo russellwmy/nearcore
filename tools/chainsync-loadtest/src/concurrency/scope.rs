@@ -1,6 +1,7 @@
 use std::sync::{Mutex,Arc};
 use std::future::{Future};
 use crate::concurrency::{Ctx};
+use log::{info};
 
 struct Scope_ {
     cancel : Option<Box<dyn FnOnce() -> () + Send>>,

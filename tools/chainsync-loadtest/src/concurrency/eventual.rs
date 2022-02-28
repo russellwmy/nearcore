@@ -3,6 +3,7 @@ use std::future::Future;
 use std::sync::{Arc,Weak,RwLock};
 use std::pin::Pin;
 
+// TODO: reimplement, based on tokio::sync::Notify
 struct Eventual_<T:Clone> {
     value:Option<T>,
     waiters: Vec<Weak<RwLock<Waiter_<T>>>>,

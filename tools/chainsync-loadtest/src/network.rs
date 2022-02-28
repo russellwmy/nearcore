@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64,Ordering};
+
 use crate::concurrency::{Ctx,Dispatcher,Scope,RateLimiter};
 
 use near_network_primitives::types::{
@@ -40,12 +42,25 @@ use tokio::sync::oneshot;
 use tokio::sync;
 use tokio::time;
 
+#[derive(Default,Debug)]
+pub struct Stats {
+    msgs_sent: AtomicU64,
+    
+    header_req : AtomicU64,
+    header_resp : AtomicU64,
+    block_req : AtomicU64,
+    block_resp : AtomicU64,
+    chunk_req : AtomicU64,
+    chunk_resp : AtomicU64,
+}
+
 struct NetworkData {
     info_futures: Vec<oneshot::Sender<Arc<NetworkInfo>>>,
     info_ : Arc<NetworkInfo>,
 }
 
 pub struct Network {
+    pub stats: Stats,
     network_adapter: Arc<dyn PeerManagerAdapter>,
     block_headers_disp: Dispatcher<CryptoHash,Vec<BlockHeader>>,
     block_disp: Dispatcher<CryptoHash,Block>,
@@ -66,6 +81,7 @@ pub struct Network {
 impl Network {
     pub fn new(config:&NearConfig,network_adapter:Arc<dyn PeerManagerAdapter>) -> Arc<Network> {
         Arc::new(Network{
+            stats: Default::default(),
             network_adapter,
             data: Mutex::new(NetworkData{
                 info_ : Arc::new(NetworkInfo{
@@ -96,11 +112,14 @@ impl Network {
         let ctx = ctx.clone();
         async move {
             loop {
+                // TODO: shuffle the peer order.
                 for peer in &self_.info(&ctx).await?.connected_peers {
+                    // TODO: rate limit per peer.
                     self_.rate_limiter.allow(&ctx).await?;
                     self_.network_adapter.do_send(PeerManagerMessageRequest::NetworkRequests(
                         new_req(peer.clone())
                     ));
+                    self_.stats.msgs_sent.fetch_add(1,Ordering::Relaxed);
                     ctx.wait(self_.request_timeout).await?;
                 }
             }
@@ -125,13 +144,19 @@ impl Network {
         let hash = hash.clone();
         let recv = self.block_headers_disp.subscribe(&hash);
         Scope::run(ctx,|ctx,s|async move{
-            s.spawn(move |ctx,s|self_.keep_sending(&ctx,move|peer|{
-                NetworkRequests::BlockHeadersRequest{
-                    hashes: vec![hash.clone()],
-                    peer_id: peer.peer_info.id.clone(),
-                }
-            }));
-            anyhow::Ok(ctx.wrap(recv).await?)
+            self_.stats.header_req.fetch_add(1,Ordering::Relaxed);
+            s.spawn({
+                let self_ = self_.clone();
+                move |ctx,s|self_.keep_sending(&ctx,move|peer|{
+                    NetworkRequests::BlockHeadersRequest{
+                        hashes: vec![hash.clone()],
+                        peer_id: peer.peer_info.id.clone(),
+                    }
+                })
+            });
+            let res = ctx.wrap(recv).await?;
+            self_.stats.header_resp.fetch_add(1,Ordering::Relaxed);
+            anyhow::Ok(res)
         }).await
     }
 
@@ -140,13 +165,19 @@ impl Network {
         let hash = hash.clone();
         let recv = self_.block_disp.subscribe(&hash);
         Scope::run(ctx,|ctx,s|async move{
-            s.spawn(move |ctx,s|self_.keep_sending(&ctx,move|peer|{
-                NetworkRequests::BlockRequest{
-                    hash:hash.clone(),
-                    peer_id: peer.peer_info.id.clone(),
-                }
-            }));
-            anyhow::Ok(ctx.wrap(recv).await?)
+            self_.stats.block_req.fetch_add(1,Ordering::Relaxed);
+            s.spawn({
+                let self_ = self_.clone();
+                move |ctx,s|self_.keep_sending(&ctx,move|peer|{
+                    NetworkRequests::BlockRequest{
+                        hash:hash.clone(),
+                        peer_id: peer.peer_info.id.clone(),
+                    }
+                })
+            });
+            let res = ctx.wrap(recv).await?;
+            self_.stats.block_resp.fetch_add(1,Ordering::Relaxed);
+            anyhow::Ok(res)
         }).await
     }
 
@@ -155,23 +186,29 @@ impl Network {
         let ch = ch.clone();
         let recv = self_.chunk_disp.subscribe(&ch.chunk_hash());
         Scope::run(ctx,|ctx,s|async move{
-            s.spawn(move |ctx,s|self_.clone().keep_sending(&ctx,move|peer|{
-                NetworkRequests::PartialEncodedChunkRequest{
-                    target: AccountIdOrPeerTrackingShard {
-                        account_id: None,
-                        prefer_peer: true, 
-                        shard_id: ch.shard_id(),
-                        only_archival: false,
-                        min_height: ch.height_included(),
-                    },
-                    request: PartialEncodedChunkRequestMsg {
-                        chunk_hash: ch.chunk_hash(),
-                        part_ords: (0..self_.clone().parts_per_chunk).collect(), 
-                        tracking_shards: Default::default(),
-                    },
-                }
-            }));
-            anyhow::Ok(ctx.wrap(recv).await?)
+            self_.stats.chunk_req.fetch_add(1,Ordering::Relaxed);
+            s.spawn({
+                let self_ = self_.clone();
+                move |ctx,s|self_.clone().keep_sending(&ctx,move|peer|{
+                    NetworkRequests::PartialEncodedChunkRequest{
+                        target: AccountIdOrPeerTrackingShard {
+                            account_id: peer.peer_info.account_id,
+                            prefer_peer: true, 
+                            shard_id: ch.shard_id(),
+                            only_archival: false,
+                            min_height: ch.height_included(),
+                        },
+                        request: PartialEncodedChunkRequestMsg {
+                            chunk_hash: ch.chunk_hash(),
+                            part_ords: (0..self_.clone().parts_per_chunk).collect(), 
+                            tracking_shards: Default::default(),
+                        },
+                    }
+                })
+            });
+            let res = ctx.wrap(recv).await?;
+            self_.stats.chunk_resp.fetch_add(1,Ordering::Relaxed);
+            anyhow::Ok(res)
         }).await
     }
 
