@@ -4,6 +4,9 @@ mod ctx;
 mod scope;
 mod rate_limiter;
 
+#[cfg(test)]
+mod ctx_test;
+
 pub use ctx::{Ctx,AnyhowCast};
 pub use scope::{Scope};
 pub use eventual::{Eventual};

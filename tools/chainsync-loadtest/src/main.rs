@@ -33,11 +33,11 @@ use near_network::test_utils::NetworkRecipient;
 use near_network::PeerManagerActor;
 use near_primitives::network::PeerId;
 use near_store::{Store,db};
-use nearcore::config::NearConfig;
+use nearcore::config::{NearConfig};
 use nearcore::NightshadeRuntime;
 use near_crypto::{Signer};
 use near_primitives::version;
-use near_chain_configs::{ClientConfig,GenesisValidationMode};
+use near_chain_configs::{ClientConfig,GenesisValidationMode,Genesis};
 use nearcore::config;
 use near_primitives::hash::CryptoHash;
 use near_network::types::{NetworkClientMessages,NetworkRequests};
@@ -73,7 +73,7 @@ pub fn start_with_config(home_dir: &Path, config: NearConfig) -> anyhow::Result<
     return Ok(network)
 }
 
-fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<()> {
+fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<NearConfig> {
     // Always fetch the config.
     std::fs::create_dir_all(dir)?;
     let url = config::get_config_url(chain_id);
@@ -81,21 +81,17 @@ fn download_configs(chain_id :&str, dir :&std::path::Path) -> anyhow::Result<()>
     config::download_config(&url,config_path)?;
     let config = config::Config::from_file(config_path)?;
 
-    // Fetch genesis file if not cached.
-    let genesis_path = dir.join(config.genesis_file);
-    if !genesis_path.exists() {
-        let url = config::get_genesis_url(chain_id);
-        config::download_config(&url, &genesis_path)?;
-    }
-
-    // Generate node key if missing.
-    let node_key_path = dir.join(config.node_key_file);
-    if !node_key_path.exists() {
-        let account_id = "node".parse().unwrap();
-        let node_signer = near_crypto::InMemorySigner::from_random(account_id, near_crypto::KeyType::ED25519);
-        node_signer.write_to_file(&node_key_path)?;
-    }
-    return Ok(());
+    // Generate node key.
+    let account_id = "node".parse().unwrap();
+    let node_signer = near_crypto::InMemorySigner::from_random(account_id, near_crypto::KeyType::ED25519);
+    let mut genesis = Genesis::default();
+    genesis.config.chain_id = chain_id.to_string();
+    return Ok(NearConfig::new(
+		config,
+        genesis,
+        (&node_signer).into(),
+        None,
+    ));
 }
 
 #[derive(Clap, Debug)]
@@ -117,12 +113,7 @@ impl Cmd {
 
         info!("downloading configs for chain {}",cmd.chain_id);
         let home_dir = cache_dir.as_path();
-        download_configs(&cmd.chain_id,home_dir).context("Failed to initialize configs")?;
-
-        info!("load_config({})",cmd.chain_id);
-        // Load configs from home.
-        let genesis_validation = GenesisValidationMode::UnsafeFast;
-        let mut near_config = nearcore::config::load_config(home_dir, genesis_validation);
+        let mut near_config = download_configs(&cmd.chain_id,home_dir).context("Failed to initialize configs")?;
         
         // Set current version in client config.
         near_config.client_config.version = version::Version{

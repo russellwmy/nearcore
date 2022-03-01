@@ -46,7 +46,9 @@ use tokio::time;
 fn genesis_hash(chain_id:&str) -> CryptoHash {
 	return match chain_id {
 		"mainnet" => "EPnLgE7iEq9s7yTkos96M3cWymH5avBAPm3qx3NXqR8H",
-		_ => panic!("missing hash for chain_id = {}",chain_id),
+		"testnet" => "FWJ9kR6KFWoyMoNjpLXXGHeuiy7tEY6GmoFeCA5yuc6b",
+		"betanet" => "6hy7VoEJhPEUaJr1d5ePBhKdgeDWKCjLoUAn7XS9YPj",
+		_ => { return Default::default(); },
 	}.parse().unwrap()
 }
 
@@ -75,6 +77,7 @@ pub struct Network {
     chunk_disp: Dispatcher<ChunkHash,PartialEncodedChunkResponseMsg>,
     data : Mutex<NetworkData>,
 
+    chain_id : String,
     // client_config.min_num_peers
     min_peers : usize,
     // Currently it is equivalent to genesis_config.num_block_producer_seats,
@@ -108,6 +111,7 @@ impl Network {
             block_headers_disp: Default::default(),
             chunk_disp: Default::default(),
 
+            chain_id: config.client_config.chain_id.clone(),
             min_peers: config.client_config.min_num_peers,
             parts_per_chunk: config.genesis.config.num_block_producer_seats,
             rate_limiter : RateLimiter::new(time::Duration::from_secs(1)/10,10),
@@ -284,8 +288,8 @@ impl Handler<NetworkViewClientMessages> for ClientActor {
 			NetworkViewClientMessages::GetChainInfo => {
 				return NetworkViewClientResponses::ChainInfo {
 					genesis_id: GenesisId {
-						chain_id: "mainnet".to_string(), 
-						hash: genesis_hash("mainnet"), 
+						chain_id: self.network.chain_id.clone(), 
+						hash: genesis_hash(&self.network.chain_id), 
 					},
 					height: 0, 
 					tracked_shards: Default::default(), 
