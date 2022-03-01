@@ -8,6 +8,7 @@
 /chain/jsonrpc/ @khorolets @rtsai123
 /chain/jsonrpc-primitives/ @khorolets @miraclx @rtsai123
 /chain/indexer/ @khorolets
+/chain/indexer-primitives/ @khorolets
 /chain/rosetta-rpc/ @frol @mina86
 /utils @pmnoxx @mm-near
 
@@ -33,3 +34,4 @@
 
 /docs/ @bowenwang1996 @matklad @mm-near
 /pytest/ @mm-near @mina86
+/pytest/tests/sanity/rosetta.py @mm-near @mina86 @frol
