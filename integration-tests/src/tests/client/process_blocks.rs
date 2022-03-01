@@ -1550,7 +1550,7 @@ fn test_gc_after_state_sync() {
         let block_hash = *env.clients[0].chain.get_block_by_height(i).unwrap().hash();
         assert!(env.clients[1].chain.runtime_adapter.get_epoch_start_height(&block_hash).is_ok());
     }
-    env.clients[1].chain.reset_data_pre_state_sync(sync_hash).unwrap();
+    env.clients[1].chain.reset_data_pre_state_sync(sync_hash, false).unwrap();
     assert_eq!(env.clients[1].runtime_adapter.get_gc_stop_height(&sync_hash), 0);
     // mimic what we do in possible_targets
     assert!(env.clients[1].runtime_adapter.get_epoch_id_from_prev_block(&prev_block_hash).is_ok());
@@ -1594,7 +1594,7 @@ fn test_process_block_after_state_sync() {
         let block_hash = *env.clients[0].chain.get_block_by_height(i).unwrap().hash();
         assert!(env.clients[0].chain.runtime_adapter.get_epoch_start_height(&block_hash).is_ok());
     }
-    env.clients[0].chain.reset_data_pre_state_sync(sync_hash).unwrap();
+    env.clients[0].chain.reset_data_pre_state_sync(sync_hash, false).unwrap();
     let epoch_id = env.clients[0].chain.get_block_header(&sync_hash).unwrap().epoch_id().clone();
     env.clients[0]
         .runtime_adapter
@@ -1772,7 +1772,7 @@ fn test_gc_tail_update() {
     let prev_sync_hash = *prev_sync_block.hash();
     let prev_sync_height = prev_sync_block.header().height();
     let sync_block = blocks[blocks.len() - 2].clone();
-    env.clients[1].chain.reset_data_pre_state_sync(*sync_block.hash()).unwrap();
+    env.clients[1].chain.reset_data_pre_state_sync(*sync_block.hash(), false).unwrap();
     env.clients[1].chain.save_block(prev_sync_block.into()).unwrap();
     let mut store_update = env.clients[1].chain.mut_store().store_update();
     store_update.inc_block_refcount(&prev_sync_hash).unwrap();
@@ -2043,7 +2043,7 @@ fn test_data_reset_before_state_sync() {
         )
         .unwrap();
     assert!(matches!(response.kind, QueryResponseKind::ViewAccount(_)));
-    env.clients[0].chain.reset_data_pre_state_sync(*head_block.hash()).unwrap();
+    env.clients[0].chain.reset_data_pre_state_sync(*head_block.hash(), false).unwrap();
     // account should not exist after clearing state
     let response = env.clients[0].runtime_adapter.query(
         ShardUId::single_shard(),

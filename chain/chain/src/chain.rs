@@ -1120,16 +1120,56 @@ impl Chain {
         }
     }
 
-    pub fn reset_data_pre_state_sync(&mut self, sync_hash: CryptoHash) -> Result<(), Error> {
+    /// Removes old data from the storage.  If `archival` is true, only data in
+    /// ColPartialChunks column is cleaned (this may change in the future) since
+    /// that data can be reconstructed when necessary.
+    pub fn reset_data_pre_state_sync(
+        &mut self,
+        sync_hash: CryptoHash,
+        archival: bool,
+    ) -> Result<(), Error> {
         let head = self.head()?;
         // Get header we were syncing into.
         let header = self.get_block_header(&sync_hash)?;
-        let prev_hash = *header.prev_hash();
         let sync_height = header.height();
-        let gc_height = std::cmp::min(head.height + 1, sync_height);
 
-        // GC all the data from current tail up to `gc_height`. In case tail points to a height where
-        // there is no block, we need to make sure that the last block before tail is cleaned.
+        if !archival {
+            let gc_height = std::cmp::min(head.height + 1, sync_height);
+            let prev_hash = *header.prev_hash();
+            self.reset_block_data_pre_state_sync(prev_hash, gc_height)?;
+        }
+
+        // Clear Chunks data
+        let mut chain_store_update = self.mut_store().store_update();
+        // The largest height of chunk we have in storage is head.height + 1
+        let chunk_height = std::cmp::min(head.height + 2, sync_height);
+        chain_store_update.clear_chunk_data_and_headers(chunk_height, archival)?;
+        chain_store_update.commit()?;
+
+        if !archival {
+            // clear all trie data
+            let tries = self.runtime_adapter.get_tries();
+            let mut chain_store_update = self.mut_store().store_update();
+            let mut store_update = StoreUpdate::new_with_tries(tries);
+            store_update.delete_all(ColState);
+            chain_store_update.merge(store_update);
+
+            // The reason to reset tail here is not to allow Tail be greater than Head
+            chain_store_update.reset_tail();
+            chain_store_update.commit()?;
+        }
+
+        Ok(())
+    }
+
+    pub fn reset_block_data_pre_state_sync(
+        &mut self,
+        prev_hash: CryptoHash,
+        gc_height: u64,
+    ) -> Result<(), Error> {
+        // GC all the data from current tail up to `gc_height`. In case tail
+        // points to a height where there is no block, we need to make sure that
+        // the last block before tail is cleaned.
         let tail = self.store.tail()?;
         let mut tail_prev_block_cleaned = false;
         for height in tail..gc_height {
@@ -1160,25 +1200,6 @@ impl Chain {
                 }
             }
         }
-
-        // Clear Chunks data
-        let mut chain_store_update = self.mut_store().store_update();
-        // The largest height of chunk we have in storage is head.height + 1
-        let chunk_height = std::cmp::min(head.height + 2, sync_height);
-        chain_store_update.clear_chunk_data_and_headers(chunk_height)?;
-        chain_store_update.commit()?;
-
-        // clear all trie data
-
-        let tries = self.runtime_adapter.get_tries();
-        let mut chain_store_update = self.mut_store().store_update();
-        let mut store_update = StoreUpdate::new_with_tries(tries);
-        store_update.delete_all(ColState);
-        chain_store_update.merge(store_update);
-
-        // The reason to reset tail here is not to allow Tail be greater than Head
-        chain_store_update.reset_tail();
-        chain_store_update.commit()?;
         Ok(())
     }
 
