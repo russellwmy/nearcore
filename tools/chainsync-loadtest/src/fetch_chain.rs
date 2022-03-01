@@ -18,6 +18,7 @@ pub async fn run(ctx:Ctx, network: Arc<network::Network>, start_block_hash: Cryp
         s.spawn({
             let network = network.clone();
             |ctx,s| async move{
+                let ctx = ctx.with_label("stats");
                 loop {
                     info!("stats = {:?}",network.stats);
                     info!("before wait");

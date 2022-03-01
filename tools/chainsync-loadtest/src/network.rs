@@ -121,7 +121,7 @@ impl Network {
     
     fn keep_sending(self:&Arc<Self>, ctx:&Ctx, new_req:impl Fn(FullPeerInfo) -> NetworkRequests) -> impl Future<Output=anyhow::Result<()>> {
         let self_ = self.clone();
-        let ctx = ctx.clone();
+        let ctx = ctx.with_label("keep_sending");
         async move {
             loop {
                 // TODO: shuffle the peer order.
@@ -152,78 +152,70 @@ impl Network {
     }
 
     pub async fn fetch_block_headers(self:&Arc<Self>, ctx:&Ctx, hash:&CryptoHash) -> anyhow::Result<Vec<BlockHeader>> {
-        let self_ = self.clone();
         let hash = hash.clone();
         let recv = self.block_headers_disp.subscribe(&hash);
-        let (ctx,cancel) = ctx.with_cancel();
-        Scope::run(&ctx,|ctx,s|async move{
-            self_.stats.header_req.fetch_add(1,Ordering::Relaxed);
-            s.spawn({
-                let self_ = self_.clone();
-                move |ctx,s|self_.keep_sending(&ctx,move|peer|{
-                    NetworkRequests::BlockHeadersRequest{
-                        hashes: vec![hash.clone()],
-                        peer_id: peer.peer_info.id.clone(),
-                    }
-                })
-            });
-            let res = ctx.wrap(recv).await?;
-            self_.stats.header_resp.fetch_add(1,Ordering::Relaxed);
-            cancel();
-            anyhow::Ok(res)
-        }).await
+        let (ctx,cancel) = ctx.with_label("fetch_block_headers").with_cancel();
+        self.stats.header_req.fetch_add(1,Ordering::Relaxed);
+        let handle = tokio::spawn(self.keep_sending(&ctx,move|peer|{
+            NetworkRequests::BlockHeadersRequest{
+                hashes: vec![hash.clone()],
+                peer_id: peer.peer_info.id.clone(),
+            }
+        }));
+        let res = ctx.wrap(recv).await?;
+        self.stats.header_resp.fetch_add(1,Ordering::Relaxed);
+        cancel();
+        let _ = handle.await?;
+        anyhow::Ok(res)
     }
 
     pub async fn fetch_block(self:&Arc<Self>, ctx:&Ctx, hash:&CryptoHash) -> anyhow::Result<Block> {
-        let self_ = self.clone();
         let hash = hash.clone();
-        let recv = self_.block_disp.subscribe(&hash);
-        Scope::run(ctx,|ctx,s|async move{
-            self_.stats.block_req.fetch_add(1,Ordering::Relaxed);
-            s.spawn({
-                let self_ = self_.clone();
-                move |ctx,s|self_.keep_sending(&ctx,move|peer|{
-                    NetworkRequests::BlockRequest{
-                        hash:hash.clone(),
-                        peer_id: peer.peer_info.id.clone(),
-                    }
-                })
-            });
-            let res = ctx.wrap(recv).await?;
-            self_.stats.block_resp.fetch_add(1,Ordering::Relaxed);
-            anyhow::Ok(res)
-        }).await
+        let recv = self.block_disp.subscribe(&hash);
+        let (ctx,cancel) = ctx.with_label("fetch_block").with_cancel();
+        self.stats.block_req.fetch_add(1,Ordering::Relaxed);
+        let handle = tokio::spawn(self.keep_sending(&ctx,move|peer|{
+            NetworkRequests::BlockRequest{
+                hash:hash.clone(),
+                peer_id: peer.peer_info.id.clone(),
+            }
+        }));
+        let res = ctx.wrap(recv).await?;
+        cancel();
+        let _ = handle.await?;
+        self.stats.block_resp.fetch_add(1,Ordering::Relaxed);
+        anyhow::Ok(res)
     }
 
     pub async fn fetch_chunk(self:&Arc<Self>, ctx:&Ctx, ch:&ShardChunkHeader) -> anyhow::Result<PartialEncodedChunkResponseMsg> {
-        let self_ = self.clone();
         let ch = ch.clone();
-        let recv = self_.chunk_disp.subscribe(&ch.chunk_hash());
-        Scope::run(ctx,|ctx,s|async move{
-            self_.stats.chunk_req.fetch_add(1,Ordering::Relaxed);
-            s.spawn({
-                let self_ = self_.clone();
-                move |ctx,s|self_.clone().keep_sending(&ctx,move|peer|{
-                    NetworkRequests::PartialEncodedChunkRequest{
-                        target: AccountIdOrPeerTrackingShard {
-                            account_id: peer.peer_info.account_id,
-                            prefer_peer: true, 
-                            shard_id: ch.shard_id(),
-                            only_archival: false,
-                            min_height: ch.height_included(),
-                        },
-                        request: PartialEncodedChunkRequestMsg {
-                            chunk_hash: ch.chunk_hash(),
-                            part_ords: (0..self_.clone().parts_per_chunk).collect(), 
-                            tracking_shards: Default::default(),
-                        },
-                    }
-                })
-            });
-            let res = ctx.wrap(recv).await?;
-            self_.stats.chunk_resp.fetch_add(1,Ordering::Relaxed);
-            anyhow::Ok(res)
-        }).await
+        let recv = self.chunk_disp.subscribe(&ch.chunk_hash());
+        self.stats.chunk_req.fetch_add(1,Ordering::Relaxed);
+        let (ctx,cancel) = ctx.with_label("fetch_chunk").with_cancel();
+        let handle = tokio::spawn(self.keep_sending(&ctx,{
+            let ppc = self.parts_per_chunk;
+            move|peer|{
+                NetworkRequests::PartialEncodedChunkRequest{
+                    target: AccountIdOrPeerTrackingShard {
+                        account_id: peer.peer_info.account_id,
+                        prefer_peer: true, 
+                        shard_id: ch.shard_id(),
+                        only_archival: false,
+                        min_height: ch.height_included(),
+                    },
+                    request: PartialEncodedChunkRequestMsg {
+                        chunk_hash: ch.chunk_hash(),
+                        part_ords: (0..ppc).collect(), 
+                        tracking_shards: Default::default(),
+                    },
+                }
+            }
+        }));
+        let res = ctx.wrap(recv).await?;
+        cancel();
+        let _ = handle.await?;
+        self.stats.chunk_resp.fetch_add(1,Ordering::Relaxed);
+        anyhow::Ok(res)
     }
 
     fn notify(&self, msg : NetworkClientMessages) {
