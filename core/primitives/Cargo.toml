@@ -32,11 +32,12 @@ smart-default = "0.6"
 borsh = { version = "0.9", features = ["rc"] }
 
 near-primitives-core = { path = "../primitives-core"}
-near-crypto = { path = "../crypto" }
+near-crypto = { path = "../crypto", default-features = false }
 near-vm-errors = { path = "../../runtime/near-vm-errors" }
 near-rpc-error-macro = { path = "../../tools/rpctypegen/macro" }
 
 [features]
+default = ["native_features"]
 dump_errors_schema = ["near-rpc-error-macro/dump_errors_schema"]
 protocol_feature_alt_bn128 = [
   "near-primitives-core/protocol_feature_alt_bn128",
@@ -60,6 +61,9 @@ deepsize_feature = [
   "near-vm-errors/deepsize_feature",
   "near-primitives-core/deepsize_feature",
   "near-crypto/deepsize_feature",
+]
+native_features = [
+  "near-crypto/native_features",
 ]
 
 [dev-dependencies]
