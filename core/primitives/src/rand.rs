@@ -57,7 +57,10 @@ impl WeightedIndex {
     }
 
     pub fn sample(&self, seed: [u8; 32]) -> usize {
+        #[cfg(not(target_arch = "wasm32"))]
         let usize_seed = Self::copy_8_bytes(&seed[0..8]);
+        #[cfg(target_arch = "wasm32")]
+        let usize_seed = Self::copy_4_bytes(&seed[0..8]);
         let balance_seed = Self::copy_16_bytes(&seed[8..24]);
         let uniform_index = usize::from_le_bytes(usize_seed) % self.aliases.len();
         let uniform_weight = Balance::from_le_bytes(balance_seed) % self.weight_sum;
@@ -77,6 +80,11 @@ impl WeightedIndex {
         &self.no_alias_odds
     }
 
+    fn copy_4_bytes(arr: &[u8]) -> [u8; 4] {
+        let mut result = [0u8; 4];
+        result.clone_from_slice(arr);
+        result
+    }
     fn copy_8_bytes(arr: &[u8]) -> [u8; 8] {
         let mut result = [0u8; 8];
         result.clone_from_slice(arr);
